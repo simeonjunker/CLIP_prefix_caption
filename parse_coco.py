@@ -10,11 +10,11 @@ import argparse
 
 
 def main(clip_model_type: str):
-    device = torch.device('cuda:0')
+    device = torch.device('cuda:0') if torch.cuda.is_available() else 'cpu'
     clip_model_name = clip_model_type.replace('/', '_')
     out_path = f"./data/coco/oscar_split_{clip_model_name}_train.pkl"
     clip_model, preprocess = clip.load(clip_model_type, device=device, jit=False)
-    with open('./data/coco/annotations/train_caption.json', 'r') as f:
+    with open('./data/coco/train_caption.json', 'r') as f:
         data = json.load(f)
     print("%0d captions loaded from json " % len(data))
     all_embeddings = []
@@ -22,14 +22,17 @@ def main(clip_model_type: str):
     for i in tqdm(range(len(data))):
         d = data[i]
         img_id = d["image_id"]
-        filename = f"./data/coco/train2014/COCO_train2014_{int(img_id):012d}.jpg"
+        filename = f"/home/simeon/Dokumente/Datasets/COCO/train2014/COCO_train2014_{int(img_id):012d}.jpg"
         if not os.path.isfile(filename):
-            filename = f"./data/coco/val2014/COCO_val2014_{int(img_id):012d}.jpg"
+            filename = f"/home/simeon/Dokumente/Datasets/COCO/val2014/COCO_val2014_{int(img_id):012d}.jpg"
         image = io.imread(filename)
         image = preprocess(Image.fromarray(image)).unsqueeze(0).to(device)
         with torch.no_grad():
             prefix = clip_model.encode_image(image).cpu()
         d["clip_embedding"] = i
+        print(i)
+        print(d)
+        print(prefix)
         all_embeddings.append(prefix)
         all_captions.append(d)
         if (i + 1) % 10000 == 0:

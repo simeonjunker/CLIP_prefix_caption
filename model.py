@@ -209,6 +209,56 @@ class ClipCaptionModel(nn.Module):
         return out
 
 
+class ClipREGModel(nn.Module):
+
+    def __init__(self, prefix_length: int, clip_length: Optional[int] = None, prefix_size: int = 512,
+                 num_layers: int = 8, mapping_type: MappingType = MappingType.MLP, clip_model_type='ViT-B/32', device=device):
+        super(ClipREGModel, self).__init__()
+        self.device = device
+        prefix_length = prefix_length
+        self.prefix_length = prefix_length
+        assert (prefix_length - 1) % 2 == 0, 'invalid prefix length: prefix_length-1 must be divisible by 2'
+        mapping_prefix_length = (prefix_length - 1) // 2  # 1 for location features
+        self.mapping_prefix_length = mapping_prefix_length
+        self.backbone = CLIP_Backbone(clip_model_type=clip_model_type, device=device)
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        self.gpt = GPT2LMHeadModel.from_pretrained('gpt2')
+        self.gpt_embedding_size = self.gpt.transformer.wte.weight.shape[1]
+        if mapping_type == MappingType.MLP:
+            self.target_clip_project = MLP((prefix_size, (self.gpt_embedding_size * mapping_prefix_length) // 2, self.gpt_embedding_size * mapping_prefix_length))
+            self.context_clip_project = MLP((prefix_size, (self.gpt_embedding_size * mapping_prefix_length) // 2, self.gpt_embedding_size * mapping_prefix_length))
+        else:
+            self.target_clip_project = TransformerMapper(prefix_size, self.gpt_embedding_size, mapping_prefix_length, clip_length, num_layers)
+            self.context_clip_project = TransformerMapper(prefix_size, self.gpt_embedding_size, mapping_prefix_length, clip_length, num_layers)
+        self.loc_project = nn.Linear(5, self.gpt_embedding_size)
+
+            
+            
+    def get_dummy_token(self, batch_size: int) -> torch.Tensor:
+        return torch.zeros(batch_size, self.prefix_length, dtype=torch.int64, device=self.device)
+
+                                                                     
+    def forward(self, tokens: torch.Tensor, target, context, loc, mask: Optional[torch.Tensor] = None,
+                labels: Optional[torch.Tensor] = None, from_raw : bool =False):
+        embedding_text = self.gpt.transformer.wte(tokens)
+        # target
+        target_prefix = self.backbone(target, from_raw)
+        target_prefix_projections = self.target_clip_project(target_prefix).view(-1, self.mapping_prefix_length, self.gpt_embedding_size)
+        # context
+        context_prefix = self.backbone(target, from_raw)
+        context_prefix_projections = self.context_clip_project(context_prefix).view(-1, self.mapping_prefix_length, self.gpt_embedding_size)
+        # loc
+        loc_projections = self.loc_project(loc).unsqueeze(1)
+        # concat
+        embedding_cat = torch.cat((target_prefix_projections, context_prefix_projections, loc_projections, embedding_text), dim=1)
+
+        if labels is not None:
+            dummy_token = self.get_dummy_token(tokens.shape[0], tokens.device)
+            labels = torch.cat((dummy_token, tokens), dim=1)
+
+        out = self.gpt(inputs_embeds=embedding_cat, labels=labels, attention_mask=mask)
+        return out
+
 
 class ClipCaptionPrefix(ClipCaptionModel):
 
@@ -217,6 +267,17 @@ class ClipCaptionPrefix(ClipCaptionModel):
 
     def train(self, mode: bool = True):
         super(ClipCaptionPrefix, self).train(mode)
+        self.gpt.eval()
+        return self
+    
+
+class ClipREGPrefix(ClipREGModel):
+
+    def parameters(self, recurse: bool = True):
+        return self.clip_project.parameters()
+
+    def train(self, mode: bool = True):
+        super(ClipREGPrefix, self).train(mode)
         self.gpt.eval()
         return self
 
@@ -242,7 +303,7 @@ def load_model(config_path: str, epoch_or_latest: Union[str, int] = '_latest'):
     if args.only_prefix:
         model = ClipCaptionPrefix(args.prefix_length)
     else:
-        model = ClipCaptionModel(args.prefix_length)
+        model = ClipREGModel(args.prefix_length)
     if os.path.isfile(model_path):
         print(f"loading model from {model_path}")
         model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))

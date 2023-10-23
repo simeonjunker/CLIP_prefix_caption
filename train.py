@@ -6,12 +6,12 @@ from tqdm import tqdm
 import os
 import sys
 from data_utils.refcoco import RefCocoDataset, build_dataset
-from model import ClipCaptionModel, ClipCaptionPrefix, MappingType
+from model import ClipREGModel, ClipREGPrefix, MappingType
 from os.path import join
 from configuration import Config
 
 
-def train(dataset: RefCocoDataset, model: ClipCaptionModel, config,
+def train(dataset: RefCocoDataset, model: ClipREGModel, config,
           lr: float = 2e-5, warmup_steps: int = 5000, 
           output_dir: str = ".", output_prefix: str = "", 
           device = 'cuda' if torch.cuda.is_available() else 'cpu'):
@@ -38,8 +38,8 @@ def train(dataset: RefCocoDataset, model: ClipCaptionModel, config,
         for idx, (ann_id, *encoder_input, tokens, mask) in enumerate(train_dataloader):
             model.zero_grad()
             target, context, loc = encoder_input
-            tokens, mask, target = tokens.to(device), mask.to(device), target.to(device, dtype=torch.float32)
-            outputs = model(tokens, target, mask)
+            tokens, mask, target, context, loc = tokens.to(device), mask.to(device), target.to(device, dtype=torch.float32), context.to(device, dtype=torch.float32), loc.to(device, dtype=torch.float32)
+            outputs = model(tokens, target=target, context=context, loc=loc, mask=mask)
             logits = outputs.logits[:, dataset.prefix_length - 1: -1]
             loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0)
             loss.backward()
@@ -70,12 +70,14 @@ def main():
     prefix_dim = 640 if config.is_rn else 512
     config.mapping_type = {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[config.mapping_type]
     if config.only_prefix:
-        model = ClipCaptionPrefix(prefix_length, clip_length=config.prefix_length_clip, prefix_size=prefix_dim,
+        model = ClipREGPrefix(prefix_length, clip_length=config.prefix_length_clip, prefix_size=prefix_dim,
                                   num_layers=config.num_layers, mapping_type=config.mapping_type)
+        print(f'Built {model.__class__.__name__} model')
         print("Train only prefix")
     else:
-        model = ClipCaptionModel(prefix_length, clip_length=config.prefix_length_clip, prefix_size=prefix_dim,
+        model = ClipREGModel(prefix_length, clip_length=config.prefix_length_clip, prefix_size=prefix_dim,
                                   num_layers=config.num_layers, mapping_type=config.mapping_type)
+        print(f'Built {model.__class__.__name__} model')
         print("Train both prefix and GPT")
         sys.stdout.flush()
 
@@ -85,6 +87,7 @@ def main():
         ref_dir= join(config.ref_base, config.dataset),
         coco_dir=config.coco_dir,
         verbose=config.verbose,
+        prefix_length=model.prefix_length,
         mode='training'
     )
 

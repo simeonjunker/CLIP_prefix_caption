@@ -6,7 +6,7 @@ import os.path as osp
 from configuration import Config
 from model import ClipREGModel, ClipREGPrefix, MappingType
 from data_utils.refcoco import build_dataset
-from generate_utils import generate_beam, generate2
+from generate_utils import generate_beam, generate_greedy, generate_topp
 import json
 
 
@@ -47,10 +47,14 @@ def main(args, config):
         print('using beam search')
         def generate(model, tokenizer, embed): 
             return generate_beam(model, tokenizer, embed=embed)[0][0]
+    elif args.decoding_method == 'topp':
+        print('using top-p decoding')
+        def generate(model, tokenizer, embed): 
+            return generate_topp(model, tokenizer, embed=embed)[0][0]
     else:
         print('using greedy search')
         def generate(model, tokenizer, embed):
-            return generate2(model, tokenizer, embed=embed)[0]
+            return generate_greedy(model, tokenizer, embed=embed)[0]
 
     results = []
 
@@ -90,7 +94,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--model_checkpoint', required=True)
-    parser.add_argument('--decoding_method', default='greedy', choices=['greedy', 'beam'], type=str.lower)
+    parser.add_argument('--decoding_method', default='greedy', choices=['greedy', 'beam', 'topp'], type=str.lower)
     parser.add_argument('--out_dir', default='./generated')
     parser.add_argument('--split', default='val', choices=['val', 'testa', 'testa'], type=str.lower)
 

@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn.functional as nnf
-from tqdm import trange
 
 def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
                   entry_length=67, temperature=1., stop_token=None):
@@ -65,7 +64,52 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
     return output_texts, output_list
 
 
-def generate2(
+def generate_greedy(
+        model,
+        tokenizer,
+        tokens=None,
+        prompt=None,
+        embed=None,
+        entry_length=67,  # maximum number of words
+        stop_token=None,
+):
+    model.eval()
+    stop_token = tokenizer.eos_token if stop_token is None else stop_token
+    stop_token_index = tokenizer.encode(stop_token)[0]
+    device = next(model.parameters()).device
+
+    with torch.no_grad():
+
+        if embed is not None:
+            generated = embed
+        else:
+            if tokens is None:
+                tokens = torch.tensor(tokenizer.encode(prompt))
+                tokens = tokens.unsqueeze(0).to(device)
+
+            generated = model.gpt.transformer.wte(tokens)
+
+        for i in range(entry_length):
+            outputs = model.gpt(inputs_embeds=generated)
+            logits = outputs.logits
+            logits = logits[:, -1, :]
+            next_token = torch.argmax(logits, -1).unsqueeze(0)
+            next_token_embed = model.gpt.transformer.wte(next_token)
+            if tokens is None:
+                tokens = next_token
+            else:
+                tokens = torch.cat((tokens, next_token), dim=1)
+            generated = torch.cat((generated, next_token_embed), dim=1)
+            if stop_token_index == next_token.item():
+                break
+
+        output_list = list(tokens.squeeze().cpu().numpy())
+        output_text = tokenizer.decode(output_list, skip_special_tokens=True)
+
+    return output_text, output_list
+
+
+def generate_topp(
         model,
         tokenizer,
         tokens=None,
@@ -86,7 +130,7 @@ def generate2(
 
     with torch.no_grad():
 
-        for entry_idx in trange(entry_count):
+        for entry_idx in range(entry_count):
             if embed is not None:
                 generated = embed
             else:
@@ -125,4 +169,4 @@ def generate2(
             output_text = tokenizer.decode(output_list, skip_special_tokens=True)
             generated_list.append(output_text)
 
-    return generated_list[0], output_list
+    return generated_list, output_list

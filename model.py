@@ -237,20 +237,29 @@ class ClipREGModel(nn.Module):
     def get_dummy_token(self, batch_size: int) -> torch.Tensor:
         return torch.zeros(batch_size, self.prefix_length, dtype=torch.int64, device=self.device)
 
-                                                                     
-    def forward(self, tokens: torch.Tensor, target, context, loc, mask: Optional[torch.Tensor] = None,
-                labels: Optional[torch.Tensor] = None, from_raw : bool =False):
-        embedding_text = self.gpt.transformer.wte(tokens)
+
+    def make_visual_prefix(self, target, context, loc, from_raw=False):
         # target
         target_prefix = self.backbone(target, from_raw)
         target_prefix_projections = self.target_clip_project(target_prefix).view(-1, self.mapping_prefix_length, self.gpt_embedding_size)
         # context
-        context_prefix = self.backbone(target, from_raw)
+        context_prefix = self.backbone(context, from_raw)
         context_prefix_projections = self.context_clip_project(context_prefix).view(-1, self.mapping_prefix_length, self.gpt_embedding_size)
         # loc
         loc_projections = self.loc_project(loc).unsqueeze(1)
+        # Concat
+        vis_prefix = torch.cat((target_prefix_projections, context_prefix_projections, loc_projections), dim=1)
+        
+        return vis_prefix
+                    
+                                                                     
+    def forward(self, tokens: torch.Tensor, target, context, loc, mask: Optional[torch.Tensor] = None,
+                labels: Optional[torch.Tensor] = None, from_raw : bool =False):
+        embedding_text = self.gpt.transformer.wte(tokens)
+        # target / context / loc
+        vis_prefix = self.make_visual_prefix(target, context, loc, from_raw=from_raw)
         # concat
-        embedding_cat = torch.cat((target_prefix_projections, context_prefix_projections, loc_projections, embedding_text), dim=1)
+        embedding_cat = torch.cat((vis_prefix, embedding_text), dim=1)
 
         if labels is not None:
             dummy_token = self.get_dummy_token(tokens.shape[0], tokens.device)

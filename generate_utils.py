@@ -59,7 +59,7 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
                 break
     scores = scores / seq_lengths
     output_list = tokens.cpu().numpy()
-    output_texts = [tokenizer.decode(output[:int(length)]) for output, length in zip(output_list, seq_lengths)]
+    output_texts = [tokenizer.decode(output[:int(length)], skip_special_tokens=True) for output, length in zip(output_list, seq_lengths)]
     order = scores.argsort(descending=True)
     output_texts = [output_texts[i] for i in order]
     return output_texts, output_list
@@ -122,7 +122,7 @@ def generate2(
                     break
 
             output_list = list(tokens.squeeze().cpu().numpy())
-            output_text = tokenizer.decode(output_list)
+            output_text = tokenizer.decode(output_list, skip_special_tokens=True)
             generated_list.append(output_text)
 
     return generated_list[0], output_list

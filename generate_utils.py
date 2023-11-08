@@ -2,10 +2,19 @@ import numpy as np
 import torch
 import torch.nn.functional as nnf
 
-def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
-                  entry_length=67, temperature=1., stop_token=None):
+def generate_beam(model, 
+                  tokenizer, 
+                  beam_size: int = 5, 
+                  prompt=None, 
+                  embed=None,
+                  entry_length=67, 
+                  temperature=1., 
+                  stop_token=None,
+                  set_to_eval=True
+    ):
 
-    model.eval()
+    if set_to_eval:
+        model.eval()
     stop_token = tokenizer.eos_token if stop_token is None else stop_token
     stop_token_index = tokenizer.encode(stop_token)[0]
     tokens = None
@@ -13,7 +22,9 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
     device = next(model.parameters()).device
     seq_lengths = torch.ones(beam_size, device=device)
     is_stopped = torch.zeros(beam_size, device=device, dtype=torch.bool)
-    with torch.no_grad():
+
+    grad_context = torch.no_grad if set_to_eval else torch.enable_grad
+    with grad_context():
         if embed is not None:
             generated = embed
         else:
@@ -56,6 +67,7 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
             is_stopped = is_stopped + next_tokens.eq(stop_token_index).squeeze()
             if is_stopped.all():
                 break
+
     scores = scores / seq_lengths
     output_list = tokens.cpu().numpy()
     output_texts = [tokenizer.decode(output[:int(length)], skip_special_tokens=True) for output, length in zip(output_list, seq_lengths)]
@@ -72,14 +84,18 @@ def generate_greedy(
         embed=None,
         entry_length=67,  # maximum number of words
         stop_token=None,
-):
-    model.eval()
+        set_to_eval=True
+        ):
+    
+    if set_to_eval:
+        model.eval()
     stop_token = tokenizer.eos_token if stop_token is None else stop_token
     stop_token_index = tokenizer.encode(stop_token)[0]
     device = next(model.parameters()).device
+    all_logits = []
 
-    with torch.no_grad():
-
+    grad_context = torch.no_grad if set_to_eval else torch.enable_grad
+    with grad_context():
         if embed is not None:
             generated = embed
         else:
@@ -93,6 +109,7 @@ def generate_greedy(
             outputs = model.gpt(inputs_embeds=generated)
             logits = outputs.logits
             logits = logits[:, -1, :]
+            all_logits.append(logits)
             next_token = torch.argmax(logits, -1).unsqueeze(0)
             next_token_embed = model.gpt.transformer.wte(next_token)
             if tokens is None:
@@ -105,46 +122,47 @@ def generate_greedy(
 
         output_list = list(tokens.squeeze().cpu().numpy())
         output_text = tokenizer.decode(output_list, skip_special_tokens=True)
+        all_logits = torch.cat(all_logits).unsqueeze(0)
 
-    return output_text, output_list
+    return output_text, output_list, all_logits
 
 
 def generate_topp(
         model,
         tokenizer,
-        tokens=None,
-        prompt=None,
         embed=None,
         entry_count=1,
         entry_length=67,  # maximum number of words
         top_p=0.8,
         temperature=1.,
         stop_token=None,
+        set_to_eval=True,
 ):
-    model.eval()
-    generated_list = []
+    if set_to_eval:
+        model.eval()
+    generated_tokens = []
+    generated_text = []
     stop_token = tokenizer.eos_token if stop_token is None else stop_token
     stop_token_index = tokenizer.encode(stop_token)[0]
     filter_value = -float("Inf")
-    device = next(model.parameters()).device
+    all_logits = []
 
-    with torch.no_grad():
+    grad_context = torch.no_grad if set_to_eval else torch.enable_grad
+    with grad_context():
 
         for entry_idx in range(entry_count):
-            if embed is not None:
-                generated = embed
-            else:
-                if tokens is None:
-                    tokens = torch.tensor(tokenizer.encode(prompt))
-                    tokens = tokens.unsqueeze(0).to(device)
+            generated = embed
+            tokens = None
 
-                generated = model.gpt.transformer.wte(tokens)
+            entry_logits = []
 
             for i in range(entry_length):
 
                 outputs = model.gpt(inputs_embeds=generated)
                 logits = outputs.logits
-                logits = logits[:, -1, :] / (temperature if temperature > 0 else 1.0)
+                logits = logits[:, -1, :]
+                entry_logits.append(logits)
+                logits = logits / (temperature if temperature > 0 else 1.0)
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(nnf.softmax(sorted_logits, dim=-1), dim=-1)
                 sorted_indices_to_remove = cumulative_probs > top_p
@@ -155,7 +173,12 @@ def generate_topp(
 
                 indices_to_remove = sorted_indices[sorted_indices_to_remove]
                 logits[:, indices_to_remove] = filter_value
-                next_token = torch.argmax(logits, -1).unsqueeze(0)
+                
+                
+                probs = logits.softmax(dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+
+                # next_token = torch.argmax(logits, -1).unsqueeze(0)
                 next_token_embed = model.gpt.transformer.wte(next_token)
                 if tokens is None:
                     tokens = next_token
@@ -165,8 +188,11 @@ def generate_topp(
                 if stop_token_index == next_token.item():
                     break
 
+            all_logits.append(torch.cat(entry_logits).unsqueeze(0))
+            
             output_list = list(tokens.squeeze().cpu().numpy())
+            generated_tokens.append(output_list)
             output_text = tokenizer.decode(output_list, skip_special_tokens=True)
-            generated_list.append(output_text)
+            generated_text.append(output_text)
 
-    return generated_list, output_list
+    return generated_text, generated_tokens, all_logits

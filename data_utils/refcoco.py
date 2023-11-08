@@ -91,8 +91,12 @@ class RefCocoDataset(Dataset):
         target_image, _, context_image, _ = crop_image_to_bb(
             image, bb, return_context=True)
         
-        return target_image, context_image, caption
-
+        return image, target_image, context_image, caption
+    
+    def get_bbox_from_ann_id(self, ann_id):
+        annot_dict = dict([(a[0], a[1:]) for a in self.annot_select])
+        _, _, bb = annot_dict[ann_id]
+        return bb
 
     def __getitem__(self, idx):
         ann_id, image_file, caption, bb = self.annot_select[idx]

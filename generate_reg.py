@@ -27,7 +27,9 @@ def main(args, config):
                                   num_layers=config.num_layers, mapping_type=config.mapping_type)
         print(f'Built {model.__class__.__name__} model')
 
-    model.load_state_dict(torch.load(args.model_checkpoint, map_location="cpu")) 
+
+    checkpoint_data = torch.load(args.model_checkpoint, map_location="cpu")
+    model.load_state_dict(checkpoint_data['model_state_dict']) 
     model.to(device)
     model.eval()
 

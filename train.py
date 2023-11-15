@@ -49,8 +49,11 @@ def train(train_dataset: RefCocoDataset, val_dataset: RefCocoDataset, ciderval_d
     )
 
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-
     ciderval_dataloader = DataLoader(ciderval_dataset, batch_size=1, shuffle=False, drop_last=False)
+
+    evaluator = NLGEval(no_skipthoughts=True, no_glove=True, 
+        metrics_to_omit=metrics_to_omit
+    )
 
     cider_scores = []
 
@@ -105,17 +108,13 @@ def train(train_dataset: RefCocoDataset, val_dataset: RefCocoDataset, ciderval_d
             annotations[a[0]].append(a[2])
         ids, hypotheses, ids_hypotheses, references = [], [], [], []
 
-        evaluator = NLGEval(no_skipthoughts=True, no_glove=True, 
-            metrics_to_omit=metrics_to_omit
-        )
-
         ciderval_progress = tqdm(total=len(ciderval_dataloader), desc=output_prefix)
         for idx, (ann_id, *encoder_input, tokens, mask) in enumerate(ciderval_dataloader):
             target, context, loc = encoder_input
             tokens, mask, target, context, loc = tokens.to(device), mask.to(device), target.to(device, dtype=torch.float32), context.to(device, dtype=torch.float32), loc.to(device, dtype=torch.float32)
 
             prefix_embed = model.make_visual_prefix(target, context, loc).reshape(1, ciderval_dataset.prefix_length, -1)
-            hyp, _ = generate_greedy(model, model.tokenizer, embed=prefix_embed)
+            hyp, _, _ = generate_greedy(model, model.tokenizer, embed=prefix_embed)
 
             hypotheses.append(hyp)
             id_hyp = {'ann_id': ann_id.item(), 'expression': hyp}

@@ -5,7 +5,6 @@ import torch.nn.functional as nnf
 def generate_beam(model, 
                   tokenizer, 
                   beam_size: int = 5, 
-                  prompt=None, 
                   embed=None,
                   entry_length=67, 
                   temperature=1., 
@@ -25,13 +24,7 @@ def generate_beam(model,
 
     grad_context = torch.no_grad if set_to_eval else torch.enable_grad
     with grad_context():
-        if embed is not None:
-            generated = embed
-        else:
-            if tokens is None:
-                tokens = torch.tensor(tokenizer.encode(prompt))
-                tokens = tokens.unsqueeze(0).to(device)
-                generated = model.gpt.transformer.wte(tokens)
+        generated = embed
         for i in range(entry_length):
             outputs = model.gpt(inputs_embeds=generated)
             logits = outputs.logits
@@ -76,11 +69,61 @@ def generate_beam(model,
     return output_texts, output_list
 
 
+def batch_greedy(model, 
+                 tokenizer, 
+                 embed, 
+                 entry_length=67, 
+                 stop_token=None,
+                 set_to_eval=True):
+    """greedy decoding for a batch of samples"""
+        
+    if set_to_eval:
+        model.eval()
+
+    device = next(model.parameters()).device
+    
+    stop_token = tokenizer.eos_token if stop_token is None else stop_token
+    stop_token_index = tokenizer.encode(stop_token)[0]
+    finished = torch.zeros((embed.shape[0], 1), dtype=bool, device=device) # type: ignore
+    all_logits = []
+    caption = mask = torch.zeros((embed.shape[0], 0), dtype=int) # type: ignore
+
+
+    grad_context = torch.no_grad if set_to_eval else torch.enable_grad
+    with grad_context():
+        generated = embed
+
+        for i in range(entry_length):
+            
+            mask = torch.cat([mask, finished], 1)
+            
+            outputs = model.gpt(inputs_embeds=generated)
+            logits = outputs.logits
+            logits = logits[:, -1, :]
+            all_logits.append(logits.unsqueeze(0))
+            
+            next_tokens = torch.argmax(logits, -1).unsqueeze(1)
+            next_tokens_embed = model.gpt.transformer.wte(next_tokens)
+            generated = torch.cat((generated, next_tokens_embed), dim=1)
+            
+            caption = torch.cat([caption, next_tokens], 1)
+                    
+            is_eos = next_tokens == stop_token_index
+            finished = torch.logical_or(is_eos, finished)
+            caption[:, -1:][finished] = stop_token_index
+            if all(finished):
+                break
+        
+    output_text = tokenizer.batch_decode(caption, skip_special_tokens=True)
+    all_logits = torch.cat(all_logits)
+        
+    return output_text, caption, all_logits, mask.bool()
+
+
 def generate_greedy(
         model,
         tokenizer,
         tokens=None,
-        prompt=None,
         embed=None,
         entry_length=67,  # maximum number of words
         stop_token=None,
@@ -96,14 +139,7 @@ def generate_greedy(
 
     grad_context = torch.no_grad if set_to_eval else torch.enable_grad
     with grad_context():
-        if embed is not None:
-            generated = embed
-        else:
-            if tokens is None:
-                tokens = torch.tensor(tokenizer.encode(prompt))
-                tokens = tokens.unsqueeze(0).to(device)
-
-            generated = model.gpt.transformer.wte(tokens)
+        generated = embed
 
         for i in range(entry_length):
             outputs = model.gpt(inputs_embeds=generated)
@@ -196,3 +232,92 @@ def generate_topp(
             generated_text.append(output_text)
 
     return generated_text, generated_tokens, all_logits
+
+
+def batch_topp(
+    model, 
+    tokenizer, 
+    embed, 
+    entry_count=2, 
+    entry_length=67,
+    top_p=0.8,
+    temperature=1., 
+    device="auto", 
+    stop_token=None,
+    set_to_eval=True
+    ):
+    """greedy decoding for a batch of samples"""
+        
+    if set_to_eval:
+        model.eval()
+
+        
+    device = next(model.parameters()).device
+    
+    stop_token = tokenizer.eos_token if stop_token is None else stop_token
+    stop_token_index = tokenizer.encode(stop_token)[0]
+    filter_value = -float("Inf")
+    all_logits = []
+    all_captions = []
+    all_masks = []
+    
+    grad_context = torch.no_grad if set_to_eval else torch.enable_grad
+    with grad_context():
+    
+        for entry_idx in range(entry_count):
+            generated = embed
+            finished = torch.zeros((embed.shape[0], 1), dtype=bool, device=device) # type: ignore
+            caption = mask = torch.zeros((embed.shape[0], 0), dtype=int) # type: ignore
+            entry_logits = []
+
+            for i in range(entry_length):
+                
+                mask = torch.cat([mask, finished], 1)
+                
+                outputs = model.gpt(inputs_embeds=generated)
+                logits = outputs.logits
+                logits = logits[:, -1, :]
+                entry_logits.append(logits.unsqueeze(0))
+                logits = logits / (temperature if temperature > 0 else 1.0)
+                            
+                            
+                sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+                cumulative_probs = torch.cumsum(nnf.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                                                    ..., :-1
+                                                    ].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                for sample_idx, (si, si_r) in enumerate(zip(sorted_indices, sorted_indices_to_remove)):
+                    indices_to_remove = si[si_r]
+                    logits[sample_idx, indices_to_remove] = filter_value
+                                        
+                probs = nnf.softmax(logits, dim=-1)
+                next_tokens = torch.multinomial(probs, num_samples=1)
+                
+                next_tokens_embed = model.gpt.transformer.wte(next_tokens)
+                generated = torch.cat((generated, next_tokens_embed), dim=1)
+
+                caption = torch.cat([caption, next_tokens], 1)
+                        
+                is_eos = next_tokens == stop_token_index
+                finished = torch.logical_or(is_eos, finished)
+                caption[:, -1:][finished] = stop_token_index
+                if all(finished):
+                    break
+                        
+            all_logits.append(entry_logits)
+            all_captions.append(caption)
+            all_masks.append(mask.bool())
+        
+    all_texts = [
+        tokenizer.batch_decode(caption, skip_special_tokens=True)
+        for caption in all_captions
+    ]
+
+    all_logits_concat = [
+        torch.cat(al) for al in all_logits
+    ]
+        
+    return all_texts, all_captions, all_logits_concat, all_masks

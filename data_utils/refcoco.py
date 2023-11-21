@@ -23,6 +23,7 @@ class RefCocoDataset(Dataset):
                  return_global_context=False,
                  return_location_features=False,
                  return_tensor=True,
+                 return_original_image=False
                  ):
         super().__init__()
 
@@ -38,6 +39,7 @@ class RefCocoDataset(Dataset):
         self.return_global_context = return_global_context
         self.return_location_features = return_location_features
         self.return_tensor = return_tensor
+        self.return_original_image = return_original_image
 
         if return_unique:
             # filter for unique ids
@@ -59,6 +61,13 @@ class RefCocoDataset(Dataset):
             self.eos_suffix = [eos_id]
         else:
             self.eos_suffix = []
+            
+        if isinstance(self.transform, dict):
+            assert set(self.transform.keys()) == {'target', 'context'}
+            self.target_transform = self.transform['target']
+            self.context_transform = self.transform['context']
+        else:
+            self.target_transform = self.context_transform = self.transform
         
 
     def pad_tokens(self, tokens):
@@ -87,8 +96,11 @@ class RefCocoDataset(Dataset):
         image_filepath = os.path.join(self.root, 'train2014', image_file)
         assert os.path.isfile(image_filepath)
         image = Image.open(image_filepath)
+        
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
 
-        target_image, _, context_image, _ = crop_image_to_bb(
+        target_image, _, context_image, _ = crop_image_to_bb( # type: ignore
             image, bb, return_context=True)
         
         return image, target_image, context_image, caption
@@ -120,19 +132,19 @@ class RefCocoDataset(Dataset):
             image = image.convert('RGB')
 
         # crop to bounding box
-        target_image, target_mask, context_image, context_mask = crop_image_to_bb(
+        target_image, _, context_image, _ = crop_image_to_bb( # type: ignore
             image, bb, return_context=True)
 
         # target bb
         target_image = pad_img_to_max(target_image)
-        target_image = self.transform(target_image)
+        target_image = self.target_transform(target_image)
 
         encoder_input = [target_image]
 
         if self.return_global_context:
             # add global context
             context_image = pad_img_to_max(context_image)
-            context_image = self.transform(context_image)
+            context_image = self.context_transform(context_image)
             
             encoder_input += [context_image]
             
@@ -140,6 +152,9 @@ class RefCocoDataset(Dataset):
             # add location features
             position_feature = compute_position_features(image, bb)
             encoder_input += [position_feature]
+
+        if self.return_original_image: 
+            return ann_id, *encoder_input, caption, cap_mask, [image]
 
         return ann_id, *encoder_input, caption, cap_mask
 
@@ -155,7 +170,8 @@ def build_dataset(transform,
                   use_global_features=True,
                   use_location_features=True,
                   return_unique=False, 
-                  return_tensor=True):
+                  return_tensor=True,
+                  return_original_image=False):
 
     assert mode in ['training', 'train', 'validation', 'val', 'testa', 'testb', 'test']
 
@@ -194,5 +210,7 @@ def build_dataset(transform,
                              return_unique=return_unique,
                              return_global_context=use_global_features,
                              return_location_features=use_location_features, 
-                             return_tensor=return_tensor)
+                             return_tensor=return_tensor,
+                             return_original_image=return_original_image
+                             )
     return dataset

@@ -406,7 +406,7 @@ class ClipNoContextREGModel(nn.Module):
             batch_size, self.prefix_length, dtype=torch.int64, device=self.device
         )
 
-    def make_visual_prefix(self, target, context, loc, from_raw=False):
+    def make_visual_prefix(self, target, loc, context=None, from_raw=False):
         # target
         target_prefix = self.backbone(target, from_raw)
         target_prefix_projections = self.target_clip_project(target_prefix).view(
@@ -423,8 +423,8 @@ class ClipNoContextREGModel(nn.Module):
         self,
         tokens: torch.Tensor,
         target,
-        context,
         loc,
+        context=None,
         mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         from_raw: bool = False,

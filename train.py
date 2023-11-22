@@ -155,7 +155,7 @@ def train(
                 loc.to(device, dtype=torch.float32),
             )
 
-            prefix_embed = model.make_visual_prefix(target, context, loc).reshape(
+            prefix_embed = model.make_visual_prefix(target=target, context=context, loc=loc).reshape(
                 1, ciderval_dataset.prefix_length, -1
             )
             hyp, _, _ = generate_greedy(model, model.tokenizer, embed=prefix_embed)

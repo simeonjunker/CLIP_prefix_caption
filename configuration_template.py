@@ -12,15 +12,15 @@ class Config(object):
         self.limit = -1
 
         # Training Settings
-        self.only_prefix = False
         self.checkpoint_dir = './checkpoints'
-        self.output_prefix = f'{self.dataset}_{"prefix" if self.only_prefix else "full"}'
         self.verbose = True
-        self.epochs = 10
+        self.epochs = 30
         self.save_every = 1
-        self.prefix_length = 11  # valid length: each x for which (x % 2) - 1 == 0
-        self.prefix_length_clip = 11
-        self.batch_size = 2
+        self.prefix_length = 21  # valid length: each x for which (x % 2) - 1
+        self.prefix_length_clip = 21
+        self.batch_size = 16
+        self.only_prefix = False
+        self.output_prefix = self.dataset + '_prefix' if self.only_prefix else self.dataset + '_full'
 
         # Model Settings
         self.use_global_features = True

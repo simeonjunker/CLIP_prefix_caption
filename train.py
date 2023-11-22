@@ -7,7 +7,7 @@ import os
 import sys
 from data_utils.refcoco import RefCocoDataset, build_dataset
 from data_utils.transformations import SquarePad, CoverWithNoise, update_transforms
-from model import ClipREGModel, ClipREGPrefix, MappingType
+from model import ClipREGModel, ClipREGPrefix, ClipNoContextREGModel, ClipNoContextREGPrefix, MappingType
 from os.path import join, dirname, abspath
 from configuration import Config
 import json
@@ -224,35 +224,60 @@ def train(
 
 
 def main(args, config):
+
     prefix_length = config.prefix_length
     prefix_dim = 640 if config.is_rn else 512
     config.mapping_type = {
         "mlp": MappingType.MLP,
         "transformer": MappingType.Transformer,
     }[config.mapping_type]
+
+    # select model class 
+    # depending on config.only_prefix and args.no_context
+
     if config.only_prefix:
-        model = ClipREGPrefix(
-            prefix_length,
-            clip_length=config.prefix_length_clip,
-            prefix_size=prefix_dim,
-            num_layers=config.num_layers,
-            mapping_type=config.mapping_type,
-        )
-        print(f"Built {model.__class__.__name__} model")
         print("Train only prefix")
+        if args.no_context: 
+            model = ClipNoContextREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        else:
+            model = ClipREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
     else:
-        model = ClipREGModel(
-            prefix_length,
-            clip_length=config.prefix_length_clip,
-            prefix_size=prefix_dim,
-            num_layers=config.num_layers,
-            mapping_type=config.mapping_type,
-        )
-        print(f"Built {model.__class__.__name__} model")
         print("Train both prefix and GPT")
-        sys.stdout.flush()
+        if args.no_context: 
+            model = ClipNoContextREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        else:
+            model = ClipREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+
+    print(f"Built {model.__class__.__name__} model")
+    sys.stdout.flush()
 
     # handle transformations
+    # depending on args.target_noise
+
     model_transform = model.backbone.preprocess
     if args.target_noise > 0:
         print(f"apply noise to target image (ratio {args.target_noise})")
@@ -271,6 +296,8 @@ def main(args, config):
         )
 
     transform = {"target": target_transform, "context": context_transform}
+
+    # build datasets
 
     train_dataset = build_dataset(
         transform=transform,
@@ -303,6 +330,8 @@ def main(args, config):
         return_unique=True,
     )
 
+    # run training
+
     train(
         args,
         config,
@@ -320,6 +349,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--target_noise", default=0.0, type=float)
+    parser.add_argument("--no_context", action="store_true")
     args = parser.parse_args()
 
     main(args, config)

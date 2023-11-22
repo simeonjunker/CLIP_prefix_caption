@@ -339,7 +339,7 @@ class ClipREGModel(nn.Module):
     ):
         embedding_text = self.gpt.transformer.wte(tokens)
         # target / context / loc
-        vis_prefix = self.make_visual_prefix(target, context, loc, from_raw=from_raw)
+        vis_prefix = self.make_visual_prefix(target=target, context=context, loc=loc, from_raw=from_raw)
         # concat
         embedding_cat = torch.cat((vis_prefix, embedding_text), dim=1)
 
@@ -431,7 +431,7 @@ class ClipNoContextREGModel(nn.Module):
     ):
         embedding_text = self.gpt.transformer.wte(tokens)
         # target / context / loc
-        vis_prefix = self.make_visual_prefix(target, context, loc, from_raw=from_raw)
+        vis_prefix = self.make_visual_prefix(target=target, loc=loc, from_raw=from_raw)
         # concat
         embedding_cat = torch.cat((vis_prefix, embedding_text), dim=1)
 

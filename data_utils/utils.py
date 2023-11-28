@@ -180,3 +180,17 @@ def pad_img_to_max(image, color=0, centering=(0.5, 0.5)):
         color=color
     )
     return padded_image
+
+
+def xywh_to_xyxy(bbox):
+
+    x, y, w, h = bbox
+
+    # upper left
+    x1 = x
+    y1 = y
+    # lower right
+    x2 = x + w
+    y2 = y + h
+
+    return x1, y1, x2, y2

@@ -1,11 +1,11 @@
 import torch
 from torch.utils.data import Dataset
 
-from PIL import Image
+from PIL import Image, ImageDraw
 import numpy as np
 import os
 
-from .utils import crop_image_to_bb, get_refcoco_data, compute_position_features, pad_img_to_max
+from .utils import crop_image_to_bb, get_refcoco_data, compute_position_features, pad_img_to_max, xywh_to_xyxy
 
 
 class RefCocoDataset(Dataset):
@@ -109,6 +109,17 @@ class RefCocoDataset(Dataset):
         annot_dict = dict([(a[0], a[1:]) for a in self.annot_select])
         _, _, bb = annot_dict[ann_id]
         return bb
+    
+    def get_annotated_image(self, ann_id, return_caption=False, bbox_color='blue', width=3):
+        full_image, _, _, caption = self.get_imgs_from_ann_id(ann_id)
+        bbox = self.get_bbox_from_ann_id(ann_id)
+        bbox_xyxy = xywh_to_xyxy(bbox)
+        
+        draw = ImageDraw.Draw(full_image)
+        draw.rectangle(bbox_xyxy, outline=bbox_color, width=width)
+        
+        return full_image if not return_caption else (full_image, caption)
+
 
     def __getitem__(self, idx):
         ann_id, image_file, caption, bb = self.annot_select[idx]

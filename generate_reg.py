@@ -1,10 +1,18 @@
 from pathlib import Path
 import argparse
 import torch
+import re
 from tqdm import tqdm
 import os.path as osp
 from configuration import Config
-from model import ClipREGModel, ClipREGPrefix, MappingType
+from data_utils.transformations import SquarePad, CoverWithNoise, update_transforms
+from model import (
+    ClipREGModel,
+    ClipREGPrefix,
+    ClipNoContextREGModel,
+    ClipNoContextREGPrefix,
+    MappingType,
+)
 from data_utils.refcoco import build_dataset
 from generate_utils import generate_beam, generate_greedy, generate_topp
 import json
@@ -16,37 +24,83 @@ def main(args, config):
     # make model
     prefix_length = config.prefix_length
     prefix_dim = 640 if config.is_rn else 512
-    config.mapping_type = {
-        "mlp": MappingType.MLP,
-        "transformer": MappingType.Transformer,
-    }[config.mapping_type]
-    if config.only_prefix:
-        model = ClipREGPrefix(
-            prefix_length,
-            clip_length=config.prefix_length_clip,
-            prefix_size=prefix_dim,
-            num_layers=config.num_layers,
-            mapping_type=config.mapping_type,
-        )
-        print(f"Built {model.__class__.__name__} model")
+    
+    # parse checkpoint path    
+    checkpoint_name = osp.split(args.model_checkpoint)[-1]
+    print(f'checkpoint name: {checkpoint_name}')
+    only_prefix = '_prefix' in checkpoint_name
+    no_context = '_nocontext' in checkpoint_name
+    target_noise = float(re.search(r'noise_(\d\-\d)', checkpoint_name).group(1).replace('-', '.'))
+    print('using {p} model {c} context, noise: {n}'.format(
+        p='prefix' if only_prefix else 'full',
+        c='without' if no_context else 'with',
+        n=target_noise
+    ))
+    
+    if only_prefix:
+        if no_context:
+            model = ClipNoContextREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        else:
+            model = ClipREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
     else:
-        model = ClipREGModel(
-            prefix_length,
-            clip_length=config.prefix_length_clip,
-            prefix_size=prefix_dim,
-            num_layers=config.num_layers,
-            mapping_type=config.mapping_type,
-        )
-        print(f"Built {model.__class__.__name__} model")
+        if no_context:
+            model = ClipNoContextREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        else:
+            model = ClipREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+
+    print(f"Built {model.__class__.__name__} model")
 
     checkpoint_data = torch.load(args.model_checkpoint, map_location="cpu")
     model.load_state_dict(checkpoint_data["model_state_dict"])
     model.to(device)
     model.eval()
+    
+    model_transform = model.backbone.preprocess
+    if target_noise > 0:
+        print(f"apply noise to target image (ratio {target_noise})")
+        target_transform = update_transforms(
+            model_transform,
+            pad_transform=SquarePad(),
+            noise_transform=CoverWithNoise(target_noise),
+        )
+        context_transform = update_transforms(
+            model_transform, pad_transform=SquarePad()
+        )
+    else:
+        print("do not apply noise to target image")
+        target_transform = context_transform = update_transforms(
+            model_transform, pad_transform=SquarePad()
+        )
+
+    transform = {"target": target_transform, "context": context_transform}
 
     # make dataset
     dataset = build_dataset(
-        transform=model.backbone.preprocess,
+        transform=transform,
         tokenizer=model.tokenizer,
         ref_dir=str(Path(config.ref_base, config.dataset).resolve()),
         coco_dir=config.coco_dir,
@@ -55,6 +109,7 @@ def main(args, config):
         return_unique=True,
         mode=args.split,
     )
+    data_iter = iter(dataset)
 
     if args.decoding_method == "beam":
         print("using beam search")
@@ -76,9 +131,7 @@ def main(args, config):
 
     results = []
 
-    for i, (ann_id, *encoder_input, tokens, mask) in tqdm(enumerate(dataset)):
-        if i > 10:
-            break
+    for ann_id, *encoder_input, _, _ in tqdm(data_iter, total=len(dataset)):
 
         target, context, loc = encoder_input
         target, context, loc = (
@@ -122,8 +175,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", default="./generated")
     parser.add_argument(
         "--split", default="val", choices=["val", "testa", "testa"], type=str.lower
-    )
-
+    )    
     args = parser.parse_args()
 
     # make sure the output dir exists

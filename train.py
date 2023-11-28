@@ -7,7 +7,13 @@ import os
 import sys
 from data_utils.refcoco import RefCocoDataset, build_dataset
 from data_utils.transformations import SquarePad, CoverWithNoise, update_transforms
-from model import ClipREGModel, ClipREGPrefix, ClipNoContextREGModel, ClipNoContextREGPrefix, MappingType
+from model import (
+    ClipREGModel,
+    ClipREGPrefix,
+    ClipNoContextREGModel,
+    ClipNoContextREGPrefix,
+    MappingType,
+)
 from os.path import join, dirname, abspath
 from configuration import Config
 import json
@@ -41,7 +47,6 @@ def train(
     warmup_steps: int = 5000,
     output_dir: str = ".",
     output_prefix: str = "",
-    save_samples=True,
     metrics_to_omit=["SPICE"],
     early_stopping=True,
     early_stopping_scope=8,
@@ -95,7 +100,7 @@ def train(
                 loc.to(device, dtype=torch.float32),
             )
             outputs = model(tokens, target=target, context=context, loc=loc, mask=mask)
-            logits = outputs.logits[:, train_dataset.prefix_length - 1: -1]
+            logits = outputs.logits[:, train_dataset.prefix_length - 1 : -1]
             loss = nnf.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0
             )
@@ -124,7 +129,7 @@ def train(
                 loc.to(device, dtype=torch.float32),
             )
             outputs = model(tokens, target=target, context=context, loc=loc, mask=mask)
-            logits = outputs.logits[:, val_dataset.prefix_length - 1: -1]
+            logits = outputs.logits[:, val_dataset.prefix_length - 1 : -1]
             loss = nnf.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0
             )
@@ -155,9 +160,9 @@ def train(
                 loc.to(device, dtype=torch.float32),
             )
 
-            prefix_embed = model.make_visual_prefix(target=target, context=context, loc=loc).reshape(
-                1, ciderval_dataset.prefix_length, -1
-            )
+            prefix_embed = model.make_visual_prefix(
+                target=target, context=context, loc=loc
+            ).reshape(1, ciderval_dataset.prefix_length, -1)
             hyp, _, _ = generate_greedy(model, model.tokenizer, embed=prefix_embed)
 
             hypotheses.append(hyp)
@@ -189,15 +194,16 @@ def train(
         cider_scores.append(cider_score)
         print(f"CIDEr score: {cider_score}")
 
-        if save_samples:
+        if args.save_samples:
+            sample_name = f"{output_prefix}-{epoch:03d}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}-samples.json"
             with open(
-                os.path.join(output_dir, f"{output_prefix}-{epoch:03d}-samples.json"),
+                os.path.join(output_dir, sample_name),
                 "w",
             ) as f:
                 json.dump(ids_hypotheses, f)
 
         if epoch % config.save_every == 0 or epoch == epochs - 1:
-            checkpoint_name = f"{output_prefix}-{epoch:03d}-noise_{str(args.target_noise).replace('.', '-')}.pt"
+            checkpoint_name = f"{output_prefix}-{epoch:03d}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}.pt"
 
             torch.save(
                 {
@@ -224,7 +230,6 @@ def train(
 
 
 def main(args, config):
-
     prefix_length = config.prefix_length
     prefix_dim = 640 if config.is_rn else 512
     config.mapping_type = {
@@ -232,12 +237,12 @@ def main(args, config):
         "transformer": MappingType.Transformer,
     }[config.mapping_type]
 
-    # select model class 
+    # select model class
     # depending on config.only_prefix and args.no_context
 
     if config.only_prefix:
         print("Train only prefix")
-        if args.no_context: 
+        if args.no_context:
             model = ClipNoContextREGPrefix(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -255,7 +260,7 @@ def main(args, config):
             )
     else:
         print("Train both prefix and GPT")
-        if args.no_context: 
+        if args.no_context:
             model = ClipNoContextREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -350,6 +355,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--target_noise", default=0.0, type=float)
     parser.add_argument("--no_context", action="store_true")
+    parser.add_argument("--save_samples", action="store_true")
     args = parser.parse_args()
 
     main(args, config)

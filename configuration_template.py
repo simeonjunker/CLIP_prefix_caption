@@ -15,12 +15,13 @@ class Config(object):
         self.checkpoint_dir = './checkpoints'
         self.verbose = True
         self.epochs = 30
-        self.save_every = 1
+        self.save_every = 'max'
         self.prefix_length = 21  # valid length: each x for which (x % 2) - 1
         self.prefix_length_clip = 21
         self.batch_size = 16
         self.only_prefix = False
         self.output_prefix = self.dataset + '_prefix' if self.only_prefix else self.dataset + '_full'
+        self.stop_after_epochs = 5
 
         # Model Settings
         self.use_global_features = True

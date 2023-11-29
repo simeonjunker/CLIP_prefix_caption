@@ -142,7 +142,7 @@ def main(args, config):
 
         prefix_embed = model.make_visual_prefix(
             target=target, context=context, loc=loc
-        ).reshape(1, prefix_length, -1)
+        ).reshape(1, model.prefix_length, -1)
 
         generated = generate(model, model.tokenizer, prefix_embed)
 

@@ -20,11 +20,60 @@ import json
 from generate_utils import generate_greedy
 from collections import defaultdict
 import argparse
+import logging
 
 file_path = dirname(abspath(__file__))
 module_path = join(file_path, "nlgeval")
 sys.path.append(module_path)
 from nlgeval import NLGEval
+
+
+class ScoreTracker:
+    def __init__(self, stop_after_epochs=5, initial_max=0):
+
+        self.counter = 0
+        self.max_score = initial_max
+        self.stop_after_epochs = stop_after_epochs
+        self.scores = []
+        self.stop_training = False
+
+    def __call__(self, score):
+        
+        if self.stop_after_epochs < 1:
+            # deactivated -> always continue training
+            return False
+        
+        self.max_score = max(self.scores) if len(self.scores) > 0 else self.max_score
+        self.scores.append(score)
+        
+        if score <= self.max_score:
+            self.counter += 1  # advance counter if max_score is not exceeded
+        else: 
+            self.counter = 0  # reset counter if max_score is exceeded
+
+        if len(self.scores) >= self.stop_after_epochs:  
+            #  after minimum number of epochs
+            if self.counter >= self.stop_after_epochs:  
+                # if max_score was not exceeded for threshold number of epochs
+                self.stop_training = True
+                
+    def stop(self):
+        return self.stop_training
+    
+    def print_summary(self, round_precision=3):
+        last_score = round(self.scores[-1], round_precision)
+        max_score = round(self.max_score, round_precision)
+        score_diff = round(last_score - max_score, round_precision)
+        
+        print(f'last score: {last_score}')
+        print(f'max score from previous epochs: {max_score}')
+        if self.counter == 0:
+            print('new max score achieved in this epoch')
+        else: 
+            print(f'max score achieved {self.counter} epochs ago')
+        print(f'difference to previous max: {score_diff}')
+        
+        print(f'stop training: {self.stop_training}')
 
 
 def normalize_with_tokenizer(sent, tokenizer):
@@ -48,8 +97,6 @@ def train(
     output_dir: str = ".",
     output_prefix: str = "",
     metrics_to_omit=["SPICE"],
-    early_stopping=True,
-    early_stopping_scope=8,
     device="cuda" if torch.cuda.is_available() else "cpu",
 ):
     print(f"train model on device {device}")
@@ -79,6 +126,18 @@ def train(
     evaluator = NLGEval(
         no_skipthoughts=True, no_glove=True, metrics_to_omit=metrics_to_omit
     )
+    
+    score_tracker = ScoreTracker(stop_after_epochs=config.stop_after_epochs)
+    model_name = f"{output_prefix}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}"
+    
+    log_path = os.path.join(output_dir, 'train_progress_' + model_name + '.log')
+    logging.basicConfig(
+        filename=log_path, 
+        level=logging.DEBUG
+    )
+    print(f'write train log to {log_path}')
+    
+    assert isinstance(config.save_every, int) or config.save_every.lower() == 'max', 'config.save_every has to be an integer or "max"'
 
     cider_scores = []
 
@@ -114,6 +173,7 @@ def train(
         train_progress.close()
         train_loss = torch.tensor(losses).mean().item()
         print(f"Train loss: {train_loss}")
+        logging.info(f'Train loss / epoch {epoch}: {train_loss}')
 
         model.eval()
         print(f">>> Loss Evaluation epoch {epoch}")
@@ -139,6 +199,7 @@ def train(
         val_progress.close()
         val_loss = torch.tensor(losses).mean().item()
         print(f"Val loss: {val_loss}")
+        logging.info(f'Val loss / epoch {epoch}: {val_loss}')
 
         print(f">>> CIDEr Evaluation epoch {epoch}")
         # construct reference dict
@@ -193,17 +254,30 @@ def train(
         cider_score = metrics_dict["CIDEr"]
         cider_scores.append(cider_score)
         print(f"CIDEr score: {cider_score}")
+        logging.info(f'CIDEr score / epoch {epoch}: {cider_score}')
 
         if args.save_samples:
-            sample_name = f"{output_prefix}-{epoch:03d}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}-samples.json"
+            sample_name = f"{model_name}-{epoch:03d}-samples.json"
             with open(
                 os.path.join(output_dir, sample_name),
                 "w",
             ) as f:
                 json.dump(ids_hypotheses, f)
 
-        if epoch % config.save_every == 0 or epoch == epochs - 1:
-            checkpoint_name = f"{output_prefix}-{epoch:03d}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}.pt"
+        # early stopping / export model weights based on CIDEr score
+        score_tracker(cider_score)
+        score_tracker.print_summary()
+        
+        if isinstance(config.save_every, int):
+            save_model = (epoch % config.save_every == 0 or epoch == epochs - 1)
+        else:
+            save_model = score_tracker.counter == 0
+            if not save_model:
+                print('non maximum score -- do not save model weights')
+
+        if save_model:
+            checkpoint_name = f"{model_name}-{epoch:03d}.pt"
+            print(f'save model weights to {checkpoint_name}')
 
             torch.save(
                 {
@@ -219,12 +293,8 @@ def train(
                 os.path.join(output_dir, checkpoint_name),
             )
 
-        if early_stopping:
-            if cider_score < min(cider_scores[-early_stopping_scope:]):
-                print(
-                    f"no improvements within the last {early_stopping_scope} epochs -- early stopping triggered!"
-                )
-                break
+        if score_tracker.stop():
+            break
 
     return model
 

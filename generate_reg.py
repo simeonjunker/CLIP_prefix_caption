@@ -18,8 +18,19 @@ from generate_utils import generate_beam, generate_greedy, generate_topp
 import json
 
 
-def main(args, config):
+def main(args, local_config):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    checkpoint_data = torch.load(args.model_checkpoint, map_location="cpu")
+    if 'config' in checkpoint_data.keys():
+        print('build config from checkpoint')
+        config = checkpoint_data['config']
+        # paths from local config
+        config.coco_dir = local_config.coco_dir
+        config.ref_base = local_config.ref_base
+        config.ref_dir = local_config.ref_dir
+    else:
+        print('using local config')
 
     # make model
     prefix_length = config.prefix_length
@@ -29,8 +40,8 @@ def main(args, config):
     checkpoint_name = osp.split(args.model_checkpoint)[-1]
     print(f'checkpoint name: {checkpoint_name}')
     only_prefix = '_prefix' in checkpoint_name
-    no_context = '_nocontext' in checkpoint_name
-    target_noise = float(re.search(r'noise_(\d\-\d)', checkpoint_name).group(1).replace('-', '.'))
+    no_context = 'nocontext' in checkpoint_name
+    target_noise = float(re.search(r'noise_(\d\-\d+)', checkpoint_name).group(1).replace('-', '.'))
     print('using {p} model {c} context, noise: {n}'.format(
         p='prefix' if only_prefix else 'full',
         c='without' if no_context else 'with',
@@ -74,8 +85,8 @@ def main(args, config):
 
     print(f"Built {model.__class__.__name__} model")
 
-    checkpoint_data = torch.load(args.model_checkpoint, map_location="cpu")
     model.load_state_dict(checkpoint_data["model_state_dict"])
+    print('successfully loaded weights')
     model.to(device)
     model.eval()
     

@@ -61,6 +61,69 @@ def get_refcoco_data(path):
     return (captions, ids)
 
 
+def get_paco_df(input_file='./paco_ego4d_v1_val.json'):
+    """get PACO annotations as pd.DataFrame
+
+    Args:
+        input_file (str, optional): Path to the json file for the requested split. 
+                                    Defaults to './paco_ego4d_v1_val.json'.
+
+    Returns:
+        pd.DataFrame: PACO annotations
+    """
+    
+    annotations, categories, images, *_ = get_paco_data(input_file=input_file)
+        
+    ann_df = pd.DataFrame(annotations).set_index('id')
+    cat_df = pd.DataFrame(categories).set_index('id')
+    img_df = pd.DataFrame(images).set_index('id')
+
+    data_df = pd.merge(
+        left=ann_df[['bbox', 'category_id', 'image_id', 'area']], 
+        right=cat_df[['name', 'supercategory', 'synset']],
+        left_on='category_id',
+        right_on='id'
+    )
+
+    data_df = pd.merge(
+        left=data_df, 
+        right=img_df[['file_name']],
+        left_on='image_id',
+        right_on='id'
+    )
+    
+    return data_df
+
+
+def get_paco_data(input_file='./paco_ego4d_v1_val.json'):
+    """fetch data from PACO
+
+    Args:
+        input_file (str, optional): Path to the json file for the requested split. 
+                                    Defaults to './paco_ego4d_v1_val.json'.
+
+    Returns:
+        tuple: lists with PACO data
+    """
+    
+    with open(input_file) as f:
+        data = json.load(f)
+        
+        annotations = data['annotations']
+        categories = data['categories']
+        images = data['images']
+        part_categories = data['part_categories']
+        attributes = data['attributes']
+        attr_type_to_attr_idxs = data['attr_type_to_attr_idxs']
+        #joint_obj_attribute_categories = data['joint_obj_attribute_categories']    
+        
+    return (
+        annotations, categories, images,
+        part_categories, attributes, attr_type_to_attr_idxs, 
+        #joint_obj_attribute_categories
+    )
+
+
 def split_sentences(df):
     """
         split sentences in refcoco df

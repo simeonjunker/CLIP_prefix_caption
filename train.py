@@ -5,7 +5,7 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm
 import os
 import sys
-from data_utils.refcoco import RefCocoDataset, build_dataset
+from data_utils import refcoco, paco
 from data_utils.transformations import SquarePad, CoverWithNoise, update_transforms
 from model import (
     ClipREGModel,
@@ -21,6 +21,7 @@ from generate_utils import generate_greedy
 from collections import defaultdict
 import argparse
 import logging
+from typing import Union
 
 file_path = dirname(abspath(__file__))
 module_path = join(file_path, "nlgeval")
@@ -88,9 +89,9 @@ def normalize_with_tokenizer(sent, tokenizer):
 def train(
     args,
     config,
-    train_dataset: RefCocoDataset,
-    val_dataset: RefCocoDataset,
-    ciderval_dataset: RefCocoDataset,
+    train_dataset: Union[refcoco.RefCocoDataset, paco.PACODataset],
+    val_dataset: Union[refcoco.RefCocoDataset, paco.PACODataset],
+    ciderval_dataset: Union[refcoco.RefCocoDataset, paco.PACODataset],
     model: ClipREGModel,
     lr: float = 2e-5,
     warmup_steps: int = 5000,
@@ -373,12 +374,22 @@ def main(args, config):
     transform = {"target": target_transform, "context": context_transform}
 
     # build datasets
+    if 'refcoco' in config.dataset:
+        build_dataset = refcoco.build_dataset
+        ann_dir = join(config.ref_base, config.dataset)
+        img_dir = config.coco_dir
+    elif config.dataset.lower() == 'paco':
+        build_dataset = paco.build_dataset
+        ann_dir = config.paco_base
+        img_dir = config.paco_imgs
+    else:
+        raise NotImplementedError
 
     train_dataset = build_dataset(
         transform=transform,
         tokenizer=model.tokenizer,
-        ref_dir=join(config.ref_base, config.dataset),
-        coco_dir=config.coco_dir,
+        ann_dir=ann_dir,
+        img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
         mode="training",
@@ -387,8 +398,8 @@ def main(args, config):
     val_dataset = build_dataset(
         transform=transform,
         tokenizer=model.tokenizer,
-        ref_dir=join(config.ref_base, config.dataset),
-        coco_dir=config.coco_dir,
+        ann_dir=ann_dir,
+        img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
         mode="val",
@@ -397,8 +408,8 @@ def main(args, config):
     ciderval_dataset = build_dataset(
         transform=transform,
         tokenizer=model.tokenizer,
-        ref_dir=join(config.ref_base, config.dataset),
-        coco_dir=config.coco_dir,
+        ann_dir=ann_dir,
+        img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
         mode="val",
@@ -426,6 +437,14 @@ if __name__ == "__main__":
     parser.add_argument("--target_noise", default=0.0, type=float)
     parser.add_argument("--no_context", action="store_true")
     parser.add_argument("--save_samples", action="store_true")
+    parser.add_argument("--dataset", default=None)
     args = parser.parse_args()
+    
+    if args.dataset is not None:
+        print(f'overwrite config dataset ({config.dataset}) with ({args.dataset}) from args')
+        new_prefix = config.output_prefix.replace(config.dataset, args.dataset)
+        print(f'overwrite config output prefix ({config.output_prefix}) with ({new_prefix})')
+        config.dataset = args.dataset
+        config.output_prefix = new_prefix
 
     main(args, config)

@@ -5,10 +5,10 @@ from PIL import Image, ImageDraw
 import numpy as np
 import os
 
-from .utils import crop_image_to_bb, get_refcoco_data, compute_position_features, pad_img_to_max, xywh_to_xyxy
+from .utils import crop_image_to_bb, get_paco_df, compute_position_features, pad_img_to_max, xywh_to_xyxy
 
 
-class RefCocoDataset(Dataset):
+class PACODataset(Dataset):
 
     def __init__(self,
                  data,
@@ -19,7 +19,6 @@ class RefCocoDataset(Dataset):
                  prefix_length,
                  add_eos=True,
                  normalize_prefix=False,
-                 return_unique=False,
                  return_global_context=False,
                  return_location_features=False,
                  return_tensor=True,
@@ -27,10 +26,12 @@ class RefCocoDataset(Dataset):
                  ):
         super().__init__()
 
+        print(data[1])
+
         self.img_root = img_root
         self.transform = transform
-        self.annot = [(entry['ann_id'], self._process(entry['image_id']),
-                       entry['caption'], entry['bbox']) for entry in data]
+        self.annot = [(entry['index'], entry['file_name'],
+                       entry['name'], entry['bbox']) for entry in data]
         
         self.prefix_length = prefix_length
         self.normalize_prefix = normalize_prefix        
@@ -41,16 +42,8 @@ class RefCocoDataset(Dataset):
         self.return_tensor = return_tensor
         self.return_original_image = return_original_image
 
-        if return_unique:
-            # filter for unique ids
-            self.annot_select = []
-            stored_ids = []
-            for a in self.annot:
-                if a[0] not in stored_ids:
-                    self.annot_select.append(a)
-                    stored_ids.append(a[0])
-        else:
-            self.annot_select = self.annot
+        # no return_unique in PACODataset
+        self.annot_select = self.annot
 
         self.tokenizer = tokenizer
         self.max_length = max_length + 1
@@ -82,10 +75,6 @@ class RefCocoDataset(Dataset):
         mask = torch.cat((torch.ones(self.prefix_length), mask), dim=0)  # adding prefix mask
         return tokens, mask
 
-    def _process(self, image_id):
-        val = str(image_id).zfill(12)
-        return 'COCO_train2014_' + val + '.jpg'
-
     def __len__(self):
         return len(self.annot_select)
     
@@ -93,7 +82,7 @@ class RefCocoDataset(Dataset):
         annot_dict = dict([(a[0], a[1:]) for a in self.annot_select])
         image_file, caption, bb = annot_dict[ann_id]
 
-        image_filepath = os.path.join(self.img_root, 'train2014', image_file)
+        image_filepath = os.path.join(self.img_root, image_file)
         assert os.path.isfile(image_filepath)
         image = Image.open(image_filepath)
         
@@ -123,7 +112,7 @@ class RefCocoDataset(Dataset):
 
     def __getitem__(self, idx):
         ann_id, image_file, caption, bb = self.annot_select[idx]
-        image_filepath = os.path.join(self.img_root, 'train2014', image_file)
+        image_filepath = os.path.join(self.img_root, image_file)
         assert os.path.isfile(image_filepath)
 
         image = Image.open(image_filepath)
@@ -170,6 +159,22 @@ class RefCocoDataset(Dataset):
         return ann_id, *encoder_input, caption, cap_mask
 
 
+def process_part_names(df, only='part'):
+    
+    parts_df = df.loc[df.supercategory == 'PART']
+    
+    if only == 'part':
+        parts_df['name'] = parts_df['name'].map(lambda x: x.split(':')[-1]) # keep part after ':'
+    elif only == 'full':
+        parts_df['name'] = parts_df['name'].map(lambda x: x.split(':')[0])  # keep part before ':'
+    else:
+        raise NotImplementedError(f"'only' value has to by 'part' or 'full', but is {only}")
+    
+    df.loc[parts_df.index] = parts_df
+    
+    return df
+
+
 def build_dataset(transform,
                   tokenizer,
                   ann_dir,
@@ -182,48 +187,51 @@ def build_dataset(transform,
                   use_location_features=True,
                   return_unique=False, 
                   return_tensor=True,
-                  return_original_image=False):
+                  return_original_image=False,
+                  parts_only_part=False,
+                  parts_only_full=False):
 
-    assert mode in ['training', 'train', 'validation', 'val', 'testa', 'testb', 'test']
+    assert mode in ['training', 'train', 'validation', 'val', 'test'], f"{mode} not supported"
+    if mode == 'training':
+        mode = 'train'
+    elif mode == 'validation': 
+        mode = 'val'
+    elif mode == 'test':
+        mode = 'test_dev'
+        
+    paco_ann_file = f'paco_ego4d_v1_{mode}.json'
+    paco_ann_path = os.path.join(ann_dir, paco_ann_file)
 
-    full_data, ids = get_refcoco_data(ann_dir)
-
-    # select data partition
+    data = get_paco_df(paco_ann_path).reset_index()
     
-    if mode.lower() in ['training', 'train']:
-        partition = 'train'
-    elif mode.lower() in ['validation', 'val']:
-        partition = 'val'
-    elif mode.lower() == 'testa':  # refcoco / refcoco+
-        partition = 'testA'
-    elif mode.lower() == 'testb':  # refcoco / refcoco+
-        partition = 'testB'
-    elif mode.lower() == 'test':  # refcocog
-        partition = 'test'
-    else:
-        raise NotImplementedError(f"{mode} not supported")
-    
-    data = full_data.loc[ids['caption_ids'][partition]]
+    if parts_only_part:
+        data = process_part_names(data, only='part')
+    elif parts_only_full:
+        data = process_part_names(data, only='full')
        
     # build dataset
-    dataset = RefCocoDataset(
+    dataset = PACODataset(
         data=data.to_dict(orient='records'),
         img_root=img_dir,
         max_length=max_length,
         transform=transform,
         tokenizer=tokenizer,
         prefix_length=prefix_length,
-        return_unique=return_unique,
         return_global_context=use_global_features,
         return_location_features=use_location_features, 
         return_tensor=return_tensor,
         return_original_image=return_original_image
-        )
+    )
     
     if verbose:
-        print(f'Initialize {dataset.__class__.__name__} with mode: {partition}', 
+        print(
+            f'Initialize {dataset.__class__.__name__} with mode: {mode}', 
             '\ntransformation:', transform, 
             f'\nentries: {len(dataset)}',
-            '\nreturn unique:', return_unique, '\n')  
+            '\nreturn unique (without function in PACO):', return_unique,
+            '\nreturn only part names (for parts):', parts_only_part,
+            '\nreturn only full names (for parts):', parts_only_full, 
+            '\n'
+        )
         
     return dataset

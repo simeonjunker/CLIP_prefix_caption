@@ -6,8 +6,10 @@ class Config(object):
 
         # Dataset
         self.dataset = 'refcoco'
-        self.coco_dir = 'PATH'
         self.ref_base = 'PATH'
+        self.coco_dir = 'PATH'
+        self.paco_base = 'PATH'
+        self.paco_imgs = 'PATH'
         self.ref_dir = join(self.ref_base, self.dataset)
         self.limit = -1
 

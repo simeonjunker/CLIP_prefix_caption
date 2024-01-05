@@ -10,10 +10,9 @@ from model import (
     ClipREGModel,
     ClipREGPrefix,
     ClipNoContextREGModel,
-    ClipNoContextREGPrefix,
-    MappingType,
+    ClipNoContextREGPrefix
 )
-from data_utils.refcoco import build_dataset
+from data_utils import refcoco, paco
 from generate_utils import generate_beam, generate_greedy, generate_topp
 import json
 
@@ -31,6 +30,7 @@ def main(args, local_config):
         config.ref_dir = local_config.ref_dir
     else:
         print('using local config')
+        config = local_config
 
     # make model
     prefix_length = config.prefix_length
@@ -39,9 +39,15 @@ def main(args, local_config):
     # parse checkpoint path    
     checkpoint_name = osp.split(args.model_checkpoint)[-1]
     print(f'checkpoint name: {checkpoint_name}')
+    
     only_prefix = '_prefix' in checkpoint_name
     no_context = 'nocontext' in checkpoint_name
-    target_noise = float(re.search(r'noise_(\d\-\d+)', checkpoint_name).group(1).replace('-', '.'))
+    use_paco = 'paco_' in checkpoint_name
+    
+    checkpoint_noise = re.search(r'noise_(\d\-\d+)', checkpoint_name)
+    assert checkpoint_noise is not None, 'could not extract noise information from checkpoint filename'
+    target_noise = float(checkpoint_noise.group(1).replace('-', '.'))
+    
     print('using {p} model {c} context, noise: {n}'.format(
         p='prefix' if only_prefix else 'full',
         c='without' if no_context else 'with',
@@ -109,12 +115,22 @@ def main(args, local_config):
 
     transform = {"target": target_transform, "context": context_transform}
 
+    # build datasets
+    if use_paco:
+        build_dataset = paco.build_dataset
+        ann_dir = config.paco_base
+        img_dir = config.paco_imgs
+    else:
+        build_dataset = refcoco.build_dataset
+        ann_dir = osp.join(config.ref_base, config.dataset)
+        img_dir = config.coco_dir
+        
     # make dataset
     dataset = build_dataset(
         transform=transform,
         tokenizer=model.tokenizer,
-        ref_dir=str(Path(config.ref_base, config.dataset).resolve()),
-        coco_dir=config.coco_dir,
+        ann_dir=ann_dir,
+        img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
         return_unique=True,

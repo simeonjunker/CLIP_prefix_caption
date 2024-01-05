@@ -26,8 +26,6 @@ class PACODataset(Dataset):
                  ):
         super().__init__()
 
-        print(data[1])
-
         self.img_root = img_root
         self.transform = transform
         self.annot = [(entry['index'], entry['file_name'],

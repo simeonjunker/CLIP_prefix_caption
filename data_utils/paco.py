@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw
 import numpy as np
 import os
 
-from .utils import crop_image_to_bb, get_paco_df, compute_position_features, pad_img_to_max, xywh_to_xyxy
+from .utils import crop_image_to_bb, get_paco_df, compute_position_features, pad_img_to_max, xywh_to_xyxy, remove_neg_vals_from_bb
 
 
 class PACODataset(Dataset):
@@ -187,7 +187,8 @@ def build_dataset(transform,
                   return_tensor=True,
                   return_original_image=False,
                   parts_only_part=False,
-                  parts_only_full=False):
+                  parts_only_full=False,
+                  remove_negative_bbox_values=True):
 
     assert mode in ['training', 'train', 'validation', 'val', 'test'], f"{mode} not supported"
     if mode == 'training':
@@ -206,7 +207,11 @@ def build_dataset(transform,
         data = process_part_names(data, only='part')
     elif parts_only_full:
         data = process_part_names(data, only='full')
-       
+        
+    if remove_negative_bbox_values:
+        # some entries contain erroneous negative values
+        data.bbox = data.bbox.map(remove_neg_vals_from_bb)  # set negative values to 0
+        
     # build dataset
     dataset = PACODataset(
         data=data.to_dict(orient='records'),
@@ -229,6 +234,7 @@ def build_dataset(transform,
             '\nreturn unique (without function in PACO):', return_unique,
             '\nreturn only part names (for parts):', parts_only_part,
             '\nreturn only full names (for parts):', parts_only_full, 
+            f'\nset negative bb values to zero: {remove_negative_bbox_values}',
             '\n'
         )
         

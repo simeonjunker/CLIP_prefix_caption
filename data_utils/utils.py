@@ -257,3 +257,8 @@ def xywh_to_xyxy(bbox):
     y2 = y + h
 
     return x1, y1, x2, y2
+
+
+def remove_neg_vals_from_bb(bb):
+    non_neg_bb = [max(b, 0.0) for b in bb]
+    return non_neg_bb

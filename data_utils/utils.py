@@ -2,6 +2,7 @@ import torch
 import pandas as pd
 import numpy as np
 from PIL import Image, ImageOps
+from decimal import Decimal
 
 import json
 import os
@@ -245,9 +246,9 @@ def pad_img_to_max(image, color=0, centering=(0.5, 0.5)):
     return padded_image
 
 
-def xywh_to_xyxy(bbox):
+def xywh_to_xyxy(bb):
 
-    x, y, w, h = bbox
+    x, y, w, h = map(Decimal, map(str, bb))
 
     # upper left
     x1 = x
@@ -256,9 +257,18 @@ def xywh_to_xyxy(bbox):
     x2 = x + w
     y2 = y + h
 
-    return x1, y1, x2, y2
+    out = x1, y1, x2, y2
+
+    return tuple(map(float, out))
 
 
-def remove_neg_vals_from_bb(bb):
-    non_neg_bb = [max(b, 0.0) for b in bb]
-    return non_neg_bb
+def xyxy_to_xywh(bb):
+
+    x1, y1, x2, y2 = map(Decimal, map(str, bb))
+
+    w = x2 - x1
+    h = y2 - y1
+
+    out = x1, y1, w, h
+
+    return tuple(map(float, out))

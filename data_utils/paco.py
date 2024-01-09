@@ -4,8 +4,9 @@ from torch.utils.data import Dataset
 from PIL import Image, ImageDraw
 import numpy as np
 import os
+import pandas as pd
 
-from .utils import crop_image_to_bb, get_paco_df, compute_position_features, pad_img_to_max, xywh_to_xyxy, remove_neg_vals_from_bb
+from .utils import crop_image_to_bb, get_paco_df, compute_position_features, pad_img_to_max, xywh_to_xyxy
 
 
 class PACODataset(Dataset):
@@ -28,7 +29,7 @@ class PACODataset(Dataset):
 
         self.img_root = img_root
         self.transform = transform
-        self.annot = [(entry['index'], entry['file_name'],
+        self.annot = [(entry['id'], entry['file_name'],
                        entry['name'], entry['bbox']) for entry in data]
         
         self.prefix_length = prefix_length
@@ -188,7 +189,7 @@ def build_dataset(transform,
                   return_original_image=False,
                   parts_only_part=False,
                   parts_only_full=False,
-                  remove_negative_bbox_values=True):
+                  use_normalized_paco=True,):
 
     assert mode in ['training', 'train', 'validation', 'val', 'test'], f"{mode} not supported"
     if mode == 'training':
@@ -198,19 +199,19 @@ def build_dataset(transform,
     elif mode == 'test':
         mode = 'test_dev'
         
-    paco_ann_file = f'paco_ego4d_v1_{mode}.json'
-    paco_ann_path = os.path.join(ann_dir, paco_ann_file)
-
-    data = get_paco_df(paco_ann_path).reset_index()
-    
+    if use_normalized_paco:
+        paco_ann_file = f'paco_ego4d_v1_{mode}_cleaned.json'
+        paco_ann_path = os.path.join(ann_dir, paco_ann_file)
+        data = pd.read_json(paco_ann_path)
+    else:           
+        paco_ann_file = f'paco_ego4d_v1_{mode}.json'
+        paco_ann_path = os.path.join(ann_dir, paco_ann_file)
+        data = get_paco_df(paco_ann_path).reset_index()
+            
     if parts_only_part:
         data = process_part_names(data, only='part')
     elif parts_only_full:
         data = process_part_names(data, only='full')
-        
-    if remove_negative_bbox_values:
-        # some entries contain erroneous negative values
-        data.bbox = data.bbox.map(remove_neg_vals_from_bb)  # set negative values to 0
         
     # build dataset
     dataset = PACODataset(
@@ -234,7 +235,7 @@ def build_dataset(transform,
             '\nreturn unique (without function in PACO):', return_unique,
             '\nreturn only part names (for parts):', parts_only_part,
             '\nreturn only full names (for parts):', parts_only_full, 
-            f'\nset negative bb values to zero: {remove_negative_bbox_values}',
+            f'\nuse normalized PACO: {use_normalized_paco}',
             '\n'
         )
         

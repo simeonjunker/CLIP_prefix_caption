@@ -10,6 +10,7 @@ class Config(object):
         self.coco_dir = 'PATH'
         self.paco_base = 'PATH'
         self.paco_imgs = 'PATH'
+        self.use_normalized_paco = True
         self.ref_dir = join(self.ref_base, self.dataset)
         self.limit = -1
 

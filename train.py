@@ -293,6 +293,14 @@ def train(
                 },
                 os.path.join(output_dir, checkpoint_name),
             )
+            
+            if args.clean_old_checkpoints:
+                for old_epoch in range(epoch):
+                    old_checkpoint = f"{model_name}-{old_epoch:03d}.pt"
+                    old_path = os.path.join(output_dir, old_checkpoint)
+                    if os.path.isfile(old_path):
+                        print(f'removing old checkpoint {old_checkpoint}')
+                        os.remove(old_path)
 
         if score_tracker.stop():
             break
@@ -416,6 +424,26 @@ def main(args, config):
         return_unique=True,
     )
 
+
+    if args.auto_checkpoint_path:
+        
+        if config.use_global_features:
+            context_str = 'context'
+        elif config.use_scene_summaries:
+            context_str = 'scene'
+        else:
+            context_str = 'nocontext'
+        
+        noise_str = str(args.target_noise).replace(".", "-")
+            
+        checkpoint_path = os.path.join(
+            config.checkpoint_dir, config.dataset, 
+            f'noise_{noise_str}_{context_str}'
+        )
+        
+    else: 
+        checkpoint_path = config.checkpoint_dir
+
     # run training
 
     train(
@@ -425,7 +453,7 @@ def main(args, config):
         val_dataset,
         ciderval_dataset,
         model,
-        output_dir=config.checkpoint_dir,
+        output_dir=checkpoint_path,
         output_prefix=config.output_prefix,
     )
 
@@ -438,6 +466,8 @@ if __name__ == "__main__":
     parser.add_argument("--no_context", action="store_true")
     parser.add_argument("--save_samples", action="store_true")
     parser.add_argument("--dataset", default=None)
+    parser.add_argument("--auto_checkpoint_path", default=True, type=bool)
+    parser.add_argument("--clean_old_checkpoints", default=True, type=bool)
     args = parser.parse_args()
     
     if args.dataset is not None:

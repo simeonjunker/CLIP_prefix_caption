@@ -24,7 +24,7 @@ class Config(object):
         self.batch_size = 16
         self.only_prefix = False
         self.output_prefix = self.dataset + '_prefix' if self.only_prefix else self.dataset + '_full'
-        self.stop_after_epochs = 5
+        self.stop_after_epochs = 3
 
         # Model Settings
         self.use_global_features = True

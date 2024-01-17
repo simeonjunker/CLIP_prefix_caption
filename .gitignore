@@ -4,6 +4,7 @@ checkpoints
 data
 configuration.py
 configuration_bender.py
+configuration_cluster.py
 generated
 .vscode
 mdetr_eval

@@ -289,6 +289,7 @@ def train(
                     "train_loss": train_loss,
                     "val_loss": val_loss,
                     "cider_score": cider_score,
+                    "args": args,
                     "config": config,
                 },
                 os.path.join(output_dir, checkpoint_name),

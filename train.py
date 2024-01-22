@@ -428,12 +428,10 @@ def main(args, config):
 
     if args.auto_checkpoint_path:
         
-        if config.use_global_features:
-            context_str = 'context'
-        elif config.use_scene_summaries:
-            context_str = 'scene'
-        else:
+        if args.no_context:
             context_str = 'nocontext'
+        else:
+            context_str = 'context'
         
         noise_str = str(args.target_noise).replace(".", "-")
             

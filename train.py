@@ -269,7 +269,7 @@ def train(
         score_tracker(cider_score)
         score_tracker.print_summary()
         
-        if isinstance(config.save_every, int):
+        if isinstance(args.save_every, int):
             save_model = (epoch % config.save_every == 0 or epoch == epochs - 1)
         else:
             save_model = score_tracker.counter == 0

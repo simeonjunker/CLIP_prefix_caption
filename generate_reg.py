@@ -3,6 +3,7 @@ import argparse
 import torch
 import re
 from tqdm import tqdm
+import os
 import os.path as osp
 from configuration import Config
 from data_utils.transformations import SquarePad, CoverWithNoise, update_transforms
@@ -21,16 +22,42 @@ def main(args, local_config):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     checkpoint_data = torch.load(args.model_checkpoint, map_location="cpu")
-    if 'config' in checkpoint_data.keys():
-        print('build config from checkpoint')
-        config = checkpoint_data['config']
-        # paths from local config
-        config.coco_dir = local_config.coco_dir
-        config.ref_base = local_config.ref_base
-        config.ref_dir = local_config.ref_dir
+
+    config = checkpoint_data['config']
+    # paths from local config
+    config.coco_dir = local_config.coco_dir
+    config.ref_base = local_config.ref_base
+    config.ref_dir = local_config.ref_dir
+    
+    model_args = checkpoint_data['args']
+    model_epoch = checkpoint_data['epoch']
+    
+    # extract info
+    
+    dataset_str = config.dataset
+
+    architecture_str = 'clpgpt'
+
+    if model_args.no_context:
+        context = 'nocontext'
     else:
-        print('using local config')
-        config = local_config
+        context = 'global'
+    context_str = f'context:{context}'
+
+    noise_str = f"noise:{str(model_args.target_noise).replace('.', '-')}"
+
+    epoch_str = f"epoch:{str(model_epoch).rjust(2,'0')}"
+    
+    # create output dir
+    if args.auto_checkpoint_path:
+        outdir = osp.join(args.out_dir, 'models', dataset_str, f'{noise_str.replace(":", "_")}_{context}')
+    else: 
+        outdir = args.out_dir
+    
+    if not osp.isdir(outdir):
+        print(f"create output directory {outdir}")
+        os.makedirs(outdir)
+                
 
     # make model
     prefix_length = config.prefix_length
@@ -39,23 +66,20 @@ def main(args, local_config):
     # parse checkpoint path    
     checkpoint_name = osp.split(args.model_checkpoint)[-1]
     print(f'checkpoint name: {checkpoint_name}')
-    
-    only_prefix = '_prefix' in checkpoint_name
-    no_context = 'nocontext' in checkpoint_name
-    use_paco = 'paco_' in checkpoint_name
-    
+        
     checkpoint_noise = re.search(r'noise_(\d\-\d+)', checkpoint_name)
     assert checkpoint_noise is not None, 'could not extract noise information from checkpoint filename'
     target_noise = float(checkpoint_noise.group(1).replace('-', '.'))
     
+    only_prefix = '_prefix' in checkpoint_name
     print('using {p} model {c} context, noise: {n}'.format(
         p='prefix' if only_prefix else 'full',
-        c='without' if no_context else 'with',
+        c='without' if model_args.no_context else 'with',
         n=target_noise
     ))
     
     if only_prefix:
-        if no_context:
+        if model_args.no_context:
             model = ClipNoContextREGPrefix(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -72,7 +96,7 @@ def main(args, local_config):
                 mapping_type=config.mapping_type,
             )
     else:
-        if no_context:
+        if model_args.no_context:
             model = ClipNoContextREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -116,7 +140,7 @@ def main(args, local_config):
     transform = {"target": target_transform, "context": context_transform}
 
     # build datasets
-    if use_paco:
+    if config.dataset.lower() == 'paco':
         build_dataset = paco.build_dataset
         ann_dir = config.paco_base
         img_dir = config.paco_imgs
@@ -175,13 +199,16 @@ def main(args, local_config):
 
         results.append({"ann_id": ann_id, "generated": generated})
 
-    model_name = osp.split(args.model_checkpoint)[-1].replace(".pt", "")
-    out_file = str(
-        Path(
-            args.out_dir, f"{model_name}_{args.split}_{args.decoding_method}.json"
-        ).resolve()
-    )
 
+    file_prefix = f'{dataset_str}_{args.split}_{architecture_str}_{context_str}_{noise_str}_{epoch_str}'
+    if args.decoding_method != 'greedy': 
+        file_prefix += f'_{args.decoding_method}'
+    
+    out_file = osp.join(
+        outdir,
+        file_prefix + '_generated.json'
+    )
+     
     with open(out_file, "w") as f:
         print(f"write results to {out_file}")
         json.dump(results, f)
@@ -201,16 +228,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--out_dir", default="./generated")
     parser.add_argument(
-        "--split", default="val", choices=["val", "testa", "testa"], type=str.lower
+        "--split", default="val", choices=["val", "testa", "testb"], type=str.lower
     )    
+    parser.add_argument("--auto_checkpoint_path", default=True, type=bool)
     args = parser.parse_args()
-
-    # make sure the output dir exists
-    p = Path(args.out_dir).expanduser().resolve()
-    if not p.exists():
-        print(f"Create output directory at {str(p)}")
-        p.mkdir()
-    args.out_dir = str(p)
 
     # make sure the checkpoint exists
     assert (

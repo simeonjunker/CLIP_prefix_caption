@@ -406,7 +406,7 @@ class ClipNoContextREGModel(nn.Module):
             batch_size, self.prefix_length, dtype=torch.int64, device=self.device
         )
 
-    def make_visual_prefix(self, target, loc, context=None, from_raw=False):
+    def make_visual_prefix(self, target, loc, from_raw=False):
         # target
         target_prefix = self.backbone(target, from_raw)
         target_prefix_projections = self.target_clip_project(target_prefix).view(
@@ -424,7 +424,6 @@ class ClipNoContextREGModel(nn.Module):
         tokens: torch.Tensor,
         target,
         loc,
-        context=None,
         mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         from_raw: bool = False,
@@ -432,6 +431,119 @@ class ClipNoContextREGModel(nn.Module):
         embedding_text = self.gpt.transformer.wte(tokens)
         # target / context / loc
         vis_prefix = self.make_visual_prefix(target=target, loc=loc, from_raw=from_raw)
+        # concat
+        embedding_cat = torch.cat((vis_prefix, embedding_text), dim=1)
+
+        if labels is not None:
+            dummy_token = self.get_dummy_token(tokens.shape[0], tokens.device)
+            labels = torch.cat((dummy_token, tokens), dim=1)
+
+        out = self.gpt(inputs_embeds=embedding_cat, labels=labels, attention_mask=mask)
+        return out
+
+    
+class ClipSceneREGModel(nn.Module):
+    def __init__(
+        self,
+        prefix_length: int,
+        clip_length: Optional[int] = None,
+        prefix_size: int = 512,
+        num_layers: int = 8,
+        scene_dim: int = 134,
+        mapping_type: MappingType = MappingType.MLP,
+        clip_model_type="ViT-B/32",
+        device=device,
+    ):
+        super().__init__()
+        self.device = device
+        prefix_length = prefix_length
+        self.prefix_length = prefix_length
+        assert (
+            prefix_length - 1
+        ) % 2 == 0, "invalid prefix length: prefix_length-1 must be divisible by 2"
+        mapping_prefix_length = (prefix_length - 1) // 2  # 1 for location features
+
+        print(
+            f"total prefix length: {prefix_length}, target/context prefix: {mapping_prefix_length}"
+        )
+
+        self.scene_dim = scene_dim
+        self.mapping_prefix_length = mapping_prefix_length
+        self.backbone = CLIP_Backbone(clip_model_type=clip_model_type, device=device)
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        self.gpt = GPT2LMHeadModel.from_pretrained("gpt2")
+        self.gpt_embedding_size = self.gpt.transformer.wte.weight.shape[1]
+                
+        if mapping_type == MappingType.MLP:
+            self.target_clip_project = MLP(
+                (
+                    prefix_size,
+                    (self.gpt_embedding_size * mapping_prefix_length) // 2,
+                    self.gpt_embedding_size * mapping_prefix_length,
+                )
+            )
+            self.scene_project = MLP(
+                (
+                    scene_dim,
+                    (self.gpt_embedding_size * mapping_prefix_length) // 2,
+                    self.gpt_embedding_size * mapping_prefix_length,
+                )
+            )
+        else:
+            self.target_clip_project = TransformerMapper(
+                prefix_size,
+                self.gpt_embedding_size,
+                mapping_prefix_length,
+                clip_length,
+                num_layers,
+            )
+            self.scene_clip_project = TransformerMapper(
+                scene_dim,
+                self.gpt_embedding_size,
+                mapping_prefix_length,
+                clip_length,
+                num_layers,
+            )
+        self.loc_project = nn.Linear(5, self.gpt_embedding_size)
+
+    def get_dummy_token(self, batch_size: int) -> torch.Tensor:
+        return torch.zeros(
+            batch_size, self.prefix_length, dtype=torch.int64, device=self.device
+        )
+
+    def make_visual_prefix(self, target, scenesum, loc, from_raw=False):
+        # target
+        target_prefix = self.backbone(target, from_raw)
+        target_prefix_projections = self.target_clip_project(target_prefix).view(
+            -1, self.mapping_prefix_length, self.gpt_embedding_size
+        )
+        # scene
+        scene_prefix_projections = self.scene_project(scenesum).view(
+            -1, self.mapping_prefix_length, self.gpt_embedding_size
+        )
+        # loc
+        loc_projections = self.loc_project(loc).unsqueeze(1)
+        # Concat
+        vis_prefix = torch.cat(
+            (target_prefix_projections, scene_prefix_projections, loc_projections),
+            dim=1,
+        )
+
+        return vis_prefix
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        target,
+        scenesum,
+        loc,
+        mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        from_raw: bool = False,
+    ):
+        embedding_text = self.gpt.transformer.wte(tokens)
+        # target / context / loc
+        vis_prefix = self.make_visual_prefix(target=target, scenesum=scenesum, loc=loc, from_raw=from_raw)
         # concat
         embedding_cat = torch.cat((vis_prefix, embedding_text), dim=1)
 
@@ -461,6 +573,16 @@ class ClipNoContextREGPrefix(ClipREGModel):
         super(ClipNoContextREGPrefix, self).train(mode)
         self.gpt.eval()
         return self
+    
+    
+class ClipSceneREGPrefix(ClipSceneREGModel):
+    def parameters(self, recurse: bool = True):
+        return self.clip_project.parameters()
+
+    def train(self, mode: bool = True):
+        super(ClipSceneREGPrefix, self).train(mode)
+        self.gpt.eval()
+        return self
 
 
 def save_config(args: argparse.Namespace):
@@ -473,7 +595,7 @@ def save_config(args: argparse.Namespace):
 
 
 def load_model(
-    config_path: str, use_context=True, epoch_or_latest: Union[str, int] = "_latest"
+    config_path: str, use_context=True, use_scene=False, epoch_or_latest: Union[str, int] = "_latest"
 ):
     with open(config_path) as f:
         config = json.load(f)
@@ -483,16 +605,28 @@ def load_model(
     if type(epoch_or_latest) is int:
         epoch_or_latest = f"-{epoch_or_latest:03d}"
     model_path = os.path.join(args.out_dir, f"{args.prefix}{epoch_or_latest}.pt")
-    if use_context:
+    
+    if use_context and not use_scene:  # target + context, loc
         if args.only_prefix:
             model = ClipREGPrefix(args.prefix_length)
         else:
             model = ClipREGModel(args.prefix_length)
-    else:
+    
+    elif not use_context and use_scene:  # target + scene + loc:
+        if args.only_prefix:
+            model = ClipSceneREGPrefix(args.prefix_length)
+        else:
+            model = ClipSceneREGModel(args.prefix_length)
+    
+    elif not use_context and not use_scene:  # target + loc
         if args.only_prefix:
             model = ClipNoContextREGPrefix(args.prefix_length)
         else:
             model = ClipNoContextREGModel(args.prefix_length)
+            
+    else:
+        raise NotImplementedError()
+    
     if os.path.isfile(model_path):
         print(f"loading model from {model_path}")
         model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))

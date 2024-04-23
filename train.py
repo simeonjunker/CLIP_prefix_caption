@@ -10,6 +10,8 @@ from data_utils.transformations import SquarePad, CoverWithNoise, update_transfo
 from model import (
     ClipREGModel,
     ClipREGPrefix,
+    ClipSceneREGModel,
+    ClipSceneREGPrefix,
     ClipNoContextREGModel,
     ClipNoContextREGPrefix,
     MappingType,
@@ -129,7 +131,13 @@ def train(
     )
     
     score_tracker = ScoreTracker(stop_after_epochs=config.stop_after_epochs)
-    model_name = f"{output_prefix}-noise_{str(args.target_noise).replace('.', '-')}{'-nocontext' if args.no_context else '-context'}"
+    if args.no_context: 
+        context_type = 'nocontext'
+    elif args.scene_summaries:
+        context_type = 'scenesum'
+    else:
+        context_type = 'context'
+    model_name = f"{output_prefix}-noise_{str(args.target_noise).replace('.', '-')}-{context_type}"
     
     log_path = os.path.join(output_dir, 'train_progress_' + model_name + '.log')
     logging.basicConfig(
@@ -151,15 +159,13 @@ def train(
         losses = []
         for idx, (ann_id, *encoder_input, tokens, mask) in enumerate(train_dataloader):
             model.zero_grad()
-            target, context, loc = encoder_input
-            tokens, mask, target, context, loc = (
-                tokens.to(device),
-                mask.to(device),
-                target.to(device, dtype=torch.float32),
-                context.to(device, dtype=torch.float32),
-                loc.to(device, dtype=torch.float32),
-            )
-            outputs = model(tokens, target=target, context=context, loc=loc, mask=mask)
+            tokens, mask = (tokens.to(device), mask.to(device))
+            encoder_input = [x.to(device, dtype=torch.float32) for x in encoder_input]
+            # encoder input:
+            #   [target, context, loc] for ClipREGModel
+            #   [target, loc] for ClipNoContextREGModel
+            #   [target, scenesum, loc] for ClipSceneREGModel
+            outputs = model(tokens, *encoder_input, mask=mask)
             logits = outputs.logits[:, train_dataset.prefix_length - 1 : -1]
             loss = nnf.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0
@@ -181,15 +187,13 @@ def train(
         val_progress = tqdm(total=len(val_dataloader), desc=output_prefix)
         losses = []
         for idx, (ann_id, *encoder_input, tokens, mask) in enumerate(val_dataloader):
-            target, context, loc = encoder_input
-            tokens, mask, target, context, loc = (
-                tokens.to(device),
-                mask.to(device),
-                target.to(device, dtype=torch.float32),
-                context.to(device, dtype=torch.float32),
-                loc.to(device, dtype=torch.float32),
-            )
-            outputs = model(tokens, target=target, context=context, loc=loc, mask=mask)
+            tokens, mask = (tokens.to(device), mask.to(device))
+            encoder_input = [x.to(device, dtype=torch.float32) for x in encoder_input]
+            # encoder input:
+            #   [target, context, loc] for ClipREGModel
+            #   [target, loc] for ClipNoContextREGModel
+            #   [target, scenesum, loc] for ClipSceneREGModel
+            outputs = model(tokens, *encoder_input, mask=mask)
             logits = outputs.logits[:, val_dataset.prefix_length - 1 : -1]
             loss = nnf.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0
@@ -213,18 +217,14 @@ def train(
         for idx, (ann_id, *encoder_input, tokens, mask) in enumerate(
             ciderval_dataloader
         ):
-            target, context, loc = encoder_input
-            tokens, mask, target, context, loc = (
-                tokens.to(device),
-                mask.to(device),
-                target.to(device, dtype=torch.float32),
-                context.to(device, dtype=torch.float32),
-                loc.to(device, dtype=torch.float32),
-            )
-
-            prefix_embed = model.make_visual_prefix(
-                target=target, context=context, loc=loc
-            ).reshape(1, ciderval_dataset.prefix_length, -1)
+            tokens, mask = (tokens.to(device), mask.to(device))
+            encoder_input = [x.to(device, dtype=torch.float32) for x in encoder_input]
+            # encoder input:
+            #   [target, context, loc] for ClipREGModel
+            #   [target, loc] for ClipNoContextREGModel
+            #   [target, scenesum, loc] for ClipSceneREGModel
+            prefix_embed = model.make_visual_prefix(*encoder_input
+                ).reshape(1, ciderval_dataset.prefix_length, -1)
             hyp, _, _ = generate_greedy(model, model.tokenizer, embed=prefix_embed)
 
             hypotheses.append(hyp)
@@ -330,6 +330,14 @@ def main(args, config):
                 num_layers=config.num_layers,
                 mapping_type=config.mapping_type,
             )
+        elif args.scene_summaries:
+            model = ClipSceneREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
         else:
             model = ClipREGPrefix(
                 prefix_length,
@@ -342,6 +350,14 @@ def main(args, config):
         print("Train both prefix and GPT")
         if args.no_context:
             model = ClipNoContextREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        elif args.scene_summaries:
+            model = ClipSceneREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
                 prefix_size=prefix_dim,
@@ -371,9 +387,12 @@ def main(args, config):
             pad_transform=SquarePad(),
             noise_transform=CoverWithNoise(args.target_noise),
         )
-        context_transform = update_transforms(
-            model_transform, pad_transform=SquarePad()
-        )
+        if not (args.no_context or args.scene_summaries):
+            context_transform = update_transforms(
+                model_transform, pad_transform=SquarePad()
+            )
+        else:  # if no context is processed
+            context_transform = None
     else:
         print("do not apply noise to target image")
         target_transform = context_transform = update_transforms(
@@ -401,6 +420,10 @@ def main(args, config):
         img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
+        use_global_features=config.use_global_features,
+        use_location_features=config.use_location_features,
+        use_scene_summaries=config.use_scensum_features,
+        scenesum_dir=config.scene_summary_location,
         mode="training",
     )
 
@@ -411,6 +434,10 @@ def main(args, config):
         img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
+        use_global_features=config.use_global_features,
+        use_location_features=config.use_location_features,
+        use_scene_summaries=config.use_scensum_features,
+        scenesum_dir=config.scene_summary_location,
         mode="val",
     )
 
@@ -421,6 +448,10 @@ def main(args, config):
         img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
+        use_global_features=config.use_global_features,
+        use_location_features=config.use_location_features,
+        use_scene_summaries=config.use_scensum_features,
+        scenesum_dir=config.scene_summary_location,
         mode="val",
         return_unique=True,
     )
@@ -430,6 +461,8 @@ def main(args, config):
         
         if args.no_context:
             context_str = 'nocontext'
+        elif args.scene_summaries:
+            context_str = 'scenesum'
         else:
             context_str = 'context'
         
@@ -463,6 +496,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--target_noise", default=0.0, type=float)
     parser.add_argument("--no_context", action="store_true")
+    parser.add_argument("--scene_summaries", action="store_true")
     parser.add_argument("--save_samples", action="store_true")
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--auto_checkpoint_path", default=True, type=bool)
@@ -475,5 +509,19 @@ if __name__ == "__main__":
         print(f'overwrite config output prefix ({config.output_prefix}) with ({new_prefix})')
         config.dataset = args.dataset
         config.output_prefix = new_prefix
+        
+    assert not (args.no_context and args.scene_summaries)
+    if args.no_context:  # target + loc
+        config.use_location_features = True
+        config.use_global_features = False
+        config.use_scensum_features = False
+    elif args.scene_summaries:  # target + scene + loc
+        config.use_location_features = True
+        config.use_global_features = False
+        config.use_scensum_features = True
+    else:  # default / target + global + loc
+        config.use_location_features = True
+        config.use_global_features = True
+        config.use_scensum_features = False
 
     main(args, config)

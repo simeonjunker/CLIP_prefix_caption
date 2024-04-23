@@ -4,6 +4,7 @@ from torch.utils.data import Dataset
 from PIL import Image, ImageDraw
 import numpy as np
 import os
+import h5py
 
 from .utils import crop_image_to_bb, get_refcoco_data, compute_position_features, pad_img_to_max, xywh_to_xyxy
 
@@ -22,6 +23,9 @@ class RefCocoDataset(Dataset):
                  return_unique=False,
                  return_global_context=False,
                  return_location_features=False,
+                 return_scene_features=False,
+                 scene_summary_ids=None,
+                 scene_summary_features=None,
                  return_tensor=True,
                  return_original_image=False
                  ):
@@ -40,6 +44,9 @@ class RefCocoDataset(Dataset):
         self.return_location_features = return_location_features
         self.return_tensor = return_tensor
         self.return_original_image = return_original_image
+        self.return_scene_features = return_scene_features
+        self.scene_summary_ids = scene_summary_ids
+        self.scene_summary_features = scene_summary_features
 
         if return_unique:
             # filter for unique ids
@@ -159,6 +166,13 @@ class RefCocoDataset(Dataset):
             
             encoder_input += [context_image]
             
+        if self.return_scene_features: 
+            # add scene summaries
+            selection_mask = self.scene_summary_ids == ann_id
+            scene_summary = torch.from_numpy(
+                self.scene_summary_features[selection_mask]).squeeze()
+            encoder_input.append(scene_summary)
+            
         if self.return_location_features:
             # add location features
             position_feature = compute_position_features(image, bb)
@@ -180,6 +194,8 @@ def build_dataset(transform,
                   mode='training',
                   use_global_features=True,
                   use_location_features=True,
+                  scenesum_dir=None,
+                  use_scene_summaries=False,
                   return_unique=False, 
                   return_tensor=True,
                   return_original_image=False):
@@ -189,7 +205,7 @@ def build_dataset(transform,
     full_data, ids = get_refcoco_data(ann_dir)
 
     # select data partition
-    
+
     if mode.lower() in ['training', 'train']:
         partition = 'train'
     elif mode.lower() in ['validation', 'val']:
@@ -202,9 +218,21 @@ def build_dataset(transform,
         partition = 'test'
     else:
         raise NotImplementedError(f"{mode} not supported")
-    
+
     data = full_data.loc[ids['caption_ids'][partition]]
-       
+
+    # handle scene summaries if set in config
+    if use_scene_summaries:
+        scenesum_filepath = os.path.join(
+            scenesum_dir, "scene_summaries", f"scene_summaries_annotated_{partition}.h5"
+        )
+        print(f"read scene summaries from {scenesum_filepath}")
+        with h5py.File(scenesum_filepath, "r") as f:
+            scenesum_ann_ids = f["ann_ids"][:].squeeze(1)
+            scenesum_feats = f["context_feats"][:]
+    else:
+        scenesum_ann_ids = scenesum_feats = None
+
     # build dataset
     dataset = RefCocoDataset(
         data=data.to_dict(orient='records'),
@@ -216,14 +244,17 @@ def build_dataset(transform,
         return_unique=return_unique,
         return_global_context=use_global_features,
         return_location_features=use_location_features, 
+        return_scene_features=use_scene_summaries,
+        scene_summary_ids=scenesum_ann_ids,
+        scene_summary_features=scenesum_feats,
         return_tensor=return_tensor,
         return_original_image=return_original_image
         )
-    
+
     if verbose:
         print(f'Initialize {dataset.__class__.__name__} with mode: {partition}', 
             '\ntransformation:', transform, 
             f'\nentries: {len(dataset)}',
             '\nreturn unique:', return_unique, '\n')  
-        
+
     return dataset

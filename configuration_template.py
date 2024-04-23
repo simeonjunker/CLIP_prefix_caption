@@ -10,6 +10,7 @@ class Config(object):
         self.coco_dir = 'PATH'
         self.paco_base = 'PATH'
         self.paco_imgs = 'PATH'
+        self.scene_summary_location = 'PATH'
         self.use_normalized_paco = True
         self.ref_dir = join(self.ref_base, self.dataset)
         self.limit = -1
@@ -29,6 +30,7 @@ class Config(object):
         # Model Settings
         self.use_global_features = True
         self.use_location_features = True
+        self.use_scensum_features = False
         self.max_length = 128
         self.mapping_type = 'mlp'
         self.num_layers = 8

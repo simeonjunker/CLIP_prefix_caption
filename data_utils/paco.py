@@ -189,7 +189,10 @@ def build_dataset(transform,
                   return_original_image=False,
                   parts_only_part=False,
                   parts_only_full=False,
-                  use_normalized_paco=True,):
+                  use_normalized_paco=True,
+                  use_scene_summaries=None,  # compatibility with RefCOCO Dataset
+                  scenesum_dir=None  # compatibility with RefCOCO Dataset
+                  ):
 
     assert mode in ['training', 'train', 'validation', 'val', 'test'], f"{mode} not supported"
     if mode == 'training':

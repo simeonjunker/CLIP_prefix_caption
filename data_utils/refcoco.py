@@ -157,6 +157,7 @@ class RefCocoDataset(Dataset):
         target_image = pad_img_to_max(target_image)
         target_image = self.target_transform(target_image)
 
+        # base case: only target representation as encoder input
         encoder_input = [target_image]
 
         if self.return_global_context:

@@ -10,8 +10,10 @@ from data_utils.transformations import SquarePad, CoverWithNoise, update_transfo
 from model import (
     ClipREGModel,
     ClipREGPrefix,
+    ClipSceneREGModel,
     ClipNoContextREGModel,
-    ClipNoContextREGPrefix
+    ClipNoContextREGPrefix,
+    ClipSceneREGPrefix,
 )
 from data_utils import refcoco, paco
 from generate_utils import generate_beam, generate_greedy, generate_topp
@@ -40,6 +42,8 @@ def main(args, local_config):
 
     if model_args.no_context:
         context = 'nocontext'
+    elif model_args.scene_summaries:
+        context = 'scene'
     else:
         context = 'global'
     context_str = f'context:{context}'
@@ -74,13 +78,21 @@ def main(args, local_config):
     only_prefix = '_prefix' in checkpoint_name
     print('using {p} model {c} context, noise: {n}'.format(
         p='prefix' if only_prefix else 'full',
-        c='without' if model_args.no_context else 'with',
+        c='without' if model_args.no_context else f'with {context}',
         n=target_noise
     ))
     
     if only_prefix:
         if model_args.no_context:
             model = ClipNoContextREGPrefix(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        elif model_args.scene_summaries:
+            model = ClipSceneREGPrefix(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
                 prefix_size=prefix_dim,
@@ -98,6 +110,14 @@ def main(args, local_config):
     else:
         if model_args.no_context:
             model = ClipNoContextREGModel(
+                prefix_length,
+                clip_length=config.prefix_length_clip,
+                prefix_size=prefix_dim,
+                num_layers=config.num_layers,
+                mapping_type=config.mapping_type,
+            )
+        elif model_args.scene_summaries:
+            model = ClipSceneREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
                 prefix_size=prefix_dim,
@@ -128,9 +148,13 @@ def main(args, local_config):
             pad_transform=SquarePad(),
             noise_transform=CoverWithNoise(target_noise),
         )
-        context_transform = update_transforms(
-            model_transform, pad_transform=SquarePad()
-        )
+        if not (model_args.no_context or model_args.scene_summaries):
+            context_transform = update_transforms(
+                model_transform, pad_transform=SquarePad()
+            )
+        else:  # if no context is processed
+            context_transform = None
+
     else:
         print("do not apply noise to target image")
         target_transform = context_transform = update_transforms(
@@ -140,14 +164,16 @@ def main(args, local_config):
     transform = {"target": target_transform, "context": context_transform}
 
     # build datasets
-    if config.dataset.lower() == 'paco':
+    if 'refcoco' in config.dataset:
+        build_dataset = refcoco.build_dataset
+        ann_dir = osp.join(config.ref_base, config.dataset)
+        img_dir = config.coco_dir
+    elif config.dataset.lower() == 'paco':
         build_dataset = paco.build_dataset
         ann_dir = config.paco_base
         img_dir = config.paco_imgs
     else:
-        build_dataset = refcoco.build_dataset
-        ann_dir = osp.join(config.ref_base, config.dataset)
-        img_dir = config.coco_dir
+        raise NotImplementedError
         
     # make dataset
     dataset = build_dataset(
@@ -157,9 +183,14 @@ def main(args, local_config):
         img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
+        use_global_features=config.use_global_features,
+        use_location_features=config.use_location_features,
+        use_scene_summaries=config.use_scensum_features,
+        scenesum_dir=config.scene_summary_location,
         return_unique=True,
         mode=args.split,
     )
+    
     data_iter = iter(dataset)
 
     if args.decoding_method == "beam":
@@ -183,22 +214,26 @@ def main(args, local_config):
     results = []
 
     for ann_id, *encoder_input, _, _ in tqdm(data_iter, total=len(dataset)):
-
-        target, context, loc = encoder_input
-        target, context, loc = (
-            target.to(device, dtype=torch.float32).unsqueeze(0),
-            context.to(device, dtype=torch.float32).unsqueeze(0),
-            loc.to(device, dtype=torch.float32).unsqueeze(0),
-        )
-
+        
+        # encoder input:
+        #   [target, context, loc] for ClipREGModel
+        #   [target, loc] for ClipNoContextREGModel
+        #   [target, scenesum, loc] for ClipSceneREGModel
+        encoder_input = [
+            x.to(device, dtype=torch.float32).unsqueeze(0) 
+            for x in encoder_input
+        ]
+        
         prefix_embed = model.make_visual_prefix(
-            target=target, context=context, loc=loc
+            *encoder_input, from_raw=False
         ).reshape(1, model.prefix_length, -1)
 
         generated = generate(model, model.tokenizer, prefix_embed)
+        
+        if args.display_results:
+            print(f'ann_id {ann_id}: {generated}')
 
         results.append({"ann_id": ann_id, "generated": generated})
-
 
     file_prefix = f'{dataset_str}_{args.split}_{architecture_str}_{context_str}_{noise_str}_{epoch_str}'
     if args.decoding_method != 'greedy': 
@@ -231,6 +266,7 @@ if __name__ == "__main__":
         "--split", default="val", choices=["val", "testa", "testb"], type=str.lower
     )    
     parser.add_argument("--auto_checkpoint_path", default=True, type=bool)
+    parser.add_argument("--display_results", action='store_true')
     args = parser.parse_args()
 
     # make sure the checkpoint exists

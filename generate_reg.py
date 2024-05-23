@@ -40,9 +40,9 @@ def main(args, local_config):
 
     architecture_str = 'clpgpt'
 
-    if model_args.no_context:
+    if vars(model_args).get('no_context', False):
         context = 'nocontext'
-    elif model_args.scene_summaries:
+    elif vars(model_args).get('scene_summaries', False):
         context = 'scene'
     else:
         context = 'global'
@@ -83,7 +83,7 @@ def main(args, local_config):
     ))
     
     if only_prefix:
-        if model_args.no_context:
+        if context == 'nocontext':
             model = ClipNoContextREGPrefix(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -91,7 +91,7 @@ def main(args, local_config):
                 num_layers=config.num_layers,
                 mapping_type=config.mapping_type,
             )
-        elif model_args.scene_summaries:
+        elif context == 'scene':
             model = ClipSceneREGPrefix(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -108,7 +108,7 @@ def main(args, local_config):
                 mapping_type=config.mapping_type,
             )
     else:
-        if model_args.no_context:
+        if context == 'nocontext':
             model = ClipNoContextREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -116,7 +116,7 @@ def main(args, local_config):
                 num_layers=config.num_layers,
                 mapping_type=config.mapping_type,
             )
-        elif model_args.scene_summaries:
+        elif context == 'scene':
             model = ClipSceneREGModel(
                 prefix_length,
                 clip_length=config.prefix_length_clip,
@@ -148,7 +148,7 @@ def main(args, local_config):
             pad_transform=SquarePad(),
             noise_transform=CoverWithNoise(target_noise),
         )
-        if not (model_args.no_context or model_args.scene_summaries):
+        if context == 'global':
             context_transform = update_transforms(
                 model_transform, pad_transform=SquarePad()
             )
@@ -183,10 +183,10 @@ def main(args, local_config):
         img_dir=img_dir,
         verbose=config.verbose,
         prefix_length=model.prefix_length,
-        use_global_features=config.use_global_features,
-        use_location_features=config.use_location_features,
-        use_scene_summaries=config.use_scensum_features,
-        scenesum_dir=config.scene_summary_location,
+        use_global_features=context == 'global',
+        use_location_features=True,
+        use_scene_summaries=context == 'scene',
+        scenesum_dir=vars(config).get('scene_summary_location', None),
         return_unique=True,
         mode=args.split,
     )

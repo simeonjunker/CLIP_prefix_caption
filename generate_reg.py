@@ -239,9 +239,11 @@ def main(args, local_config):
     if args.decoding_method != 'greedy': 
         file_prefix += f'_{args.decoding_method}'
     
+    idx_suffix = f'_{args.idx_suffix}' if args.idx_suffix is not None else ''
+
     out_file = osp.join(
         outdir,
-        file_prefix + '_generated.json'
+        file_prefix + '_generated' + idx_suffix + '.json'
     )
      
     with open(out_file, "w") as f:
@@ -267,6 +269,7 @@ if __name__ == "__main__":
     )    
     parser.add_argument("--auto_checkpoint_path", default=True, type=bool)
     parser.add_argument("--display_results", action='store_true')
+    parser.add_argument("--idx_suffix", default=None)
     args = parser.parse_args()
 
     # make sure the checkpoint exists
